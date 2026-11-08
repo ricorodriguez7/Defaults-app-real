@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#172d50">
+    <meta name="description" content="A focused workspace for tracking student placement defaults and disciplinary decisions.">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <title>Default Tracker — Campus Placement</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <a class="brand" href="#" data-view="overview" aria-label="Default Tracker home">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span class="brand-copy"><strong>campus<span>grid</span></strong><small>PLACEMENT OFFICE</small></span>
+        </a>
+        <div class="workspace-label">WORKSPACE</div>
+        <nav class="main-nav" aria-label="Main navigation">
+          <button class="nav-link active" data-view="overview"><span class="nav-icon">◫</span>Overview</button>
+          <button class="nav-link" data-view="defaults"><span class="nav-icon">▤</span>Defaults <span class="nav-count" id="nav-default-count">0</span></button>
+          <button class="nav-link" data-view="students"><span class="nav-icon">♙</span>Students</button>
+          <button class="nav-link" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
+          <button class="nav-link" data-view="audit"><span class="nav-icon">◷</span>Audit log</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="season-card"><span class="season-dot"></span><div><strong>Placement season</strong><small>2025 – 2026</small></div><span class="season-chevron">⌄</span></div>
+          <div class="user-card"><div class="avatar" id="user-avatar">AM</div><div class="user-info"><strong id="user-name">Aarav Mehta</strong><small id="user-team">Placement cell</small></div><button class="user-menu" id="switch-user" title="Switch demo member" aria-label="Switch demo member">⌄</button></div>
+        </div>
+      </aside>
+      <main class="main-content">
+        <header class="topbar">
+          <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
+          <div class="breadcrumb"><span>Placement office</span><span class="crumb-slash">/</span><strong id="page-crumb">Overview</strong></div>
+          <div class="topbar-actions"><span class="demo-pill"><span></span>DEMO WORKSPACE</span><button class="top-avatar" title="Current member" id="top-avatar">AM</button></div>
+        </header>
+        <section class="page-content" id="page-content"></section>
+      </main>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
+    <div class="modal-root" id="modal-root"></div>
+  </body>
+</html>

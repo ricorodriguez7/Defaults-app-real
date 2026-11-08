@@ -1,0 +1,267 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --panel-alt: #eef2ff;
+  --border: #dbe4f0;
+  --text: #0f172a;
+  --muted: #475569;
+  --success: #166534;
+  --warn: #b45309;
+  --danger: #991b1b;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+input:not([type='checkbox']):not([type='radio']),
+select {
+  min-height: 44px;
+}
+
+button {
+  border-radius: 0.65rem;
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid #818cf8;
+  outline-offset: 2px;
+}
+
+textarea {
+  min-height: 88px;
+}
+
+.primary-nav {
+  overflow: visible;
+}
+
+.status-badge {
+  display: inline-flex;
+  min-height: 1.75rem;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1rem;
+}
+
+.status-success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-danger {
+  background: #ffe4e6;
+  color: #9f1239;
+}
+
+.btn-primary {
+  border: 1px solid #4338ca;
+  background: #4f46e5;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #4338ca;
+}
+
+.btn-secondary {
+  border: 1px solid #cbd5e1;
+  background: white;
+  color: #334155;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.btn-danger {
+  border: 1px solid #fecdd3;
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #ffe4e6;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  margin-right: 0.45rem;
+  border: 2px solid #cbd5e1;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: tracker-spin 700ms linear infinite;
+  vertical-align: -0.1rem;
+}
+
+.sticky-filters {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.responsive-table {
+  max-width: 100%;
+}
+
+.responsive-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.responsive-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+@keyframes tracker-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 639px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .primary-nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 30;
+    display: flex;
+    justify-content: space-around;
+    gap: 0;
+    margin: 0;
+    padding: 0.4rem 0 max(0.4rem, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: rgb(255 255 255 / 96%);
+    box-shadow: 0 -4px 16px rgb(15 23 42 / 8%);
+    backdrop-filter: blur(12px);
+  }
+
+  .primary-nav button {
+    min-width: 0;
+    flex: 1;
+    padding: 0.45rem 0.2rem;
+    border-color: transparent;
+    background: transparent;
+    font-size: 0.7rem;
+    line-height: 1rem;
+  }
+
+  .primary-nav button[aria-current='page'] {
+    background: #eef2ff;
+    color: #3730a3;
+  }
+
+  .desktop-nav-label {
+    display: none;
+  }
+
+  .mobile-nav-label {
+    display: inline;
+  }
+
+  .responsive-table table,
+  .responsive-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-table thead {
+    display: none;
+  }
+
+  .responsive-table tbody tr {
+    display: block;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 0.85rem;
+    background: white;
+  }
+
+  .responsive-table tbody td {
+    display: flex;
+    min-width: 0;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding: 0.65rem 0.8rem;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+
+  .responsive-table tbody td + td {
+    border-top: 1px solid #f1f5f9;
+  }
+
+  .responsive-table tbody td[data-label]::before {
+    flex: 0 0 38%;
+    color: #64748b;
+    content: attr(data-label);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .responsive-table tbody td[colspan] {
+    display: block;
+    text-align: center;
+  }
+
+  .sticky-filters {
+    top: 0;
+  }
+}
+
+@media (min-width: 640px) {
+  .mobile-nav-label {
+    display: none;
+  }
+}
