@@ -2,6 +2,7 @@
   const STORE_KEY = "campusgrid-default-tracker-v1";
   const teams = ["Placement cell", "Summer internship"];
   const today = new Date().toISOString().slice(0, 10);
+  // Initial demo data for the tracker
   const initialData = {
     currentMemberId: "m1",
     students: [
