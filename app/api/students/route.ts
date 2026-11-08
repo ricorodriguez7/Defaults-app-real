@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
-import { databaseFailureMessage, getDb, writeAuditEntry } from '@/lib/mongodb';
-import { readJsonBody, RequestBodyError } from '@/lib/request-body';
+import { getApiErrorMessage, requestExceedsBodyLimit } from '@/lib/database-errors';
+import { getDb, writeAuditEntry } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,7 +45,7 @@ export async function GET(request: Request) {
     })));
   } catch (error) {
     console.error('Unable to load students from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load the student roster.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load the student roster.') }, { status: 500 });
   }
 }
 
@@ -53,8 +53,11 @@ export async function POST(request: Request) {
   try {
     const email = await getAuthorizedEmail();
     if (!email) return NextResponse.json({ message: 'Sign in with an authorized account.' }, { status: 401 });
+    if (requestExceedsBodyLimit(request)) {
+      return NextResponse.json({ message: 'The roster upload exceeds 4 MB. Split the file and try again.' }, { status: 413 });
+    }
 
-    const payload = await readJsonBody<{ roster?: Array<Record<string, unknown>> }>(request);
+    const payload = await request.json();
     const roster = Array.isArray(payload?.roster) ? payload.roster : [];
     if (!roster.length || roster.length > 10000) {
       return NextResponse.json({ message: 'Upload between 1 and 10,000 student records.' }, { status: 400 });
@@ -85,7 +88,7 @@ export async function POST(request: Request) {
         rollNo,
         rollNoNormalized,
         name,
-        ...(typeof entry.numberOfDefaults === 'number' && Number.isInteger(entry.numberOfDefaults) && entry.numberOfDefaults >= 0
+        ...(Number.isInteger(entry?.numberOfDefaults) && entry.numberOfDefaults >= 0
           ? { numberOfDefaults: entry.numberOfDefaults }
           : {}),
         ...(typeof entry?.lockPenaltyStatus === 'string' && entry.lockPenaltyStatus.trim()
@@ -132,10 +135,7 @@ export async function POST(request: Request) {
     ).sort({ rollNo: 1 }).toArray();
     return NextResponse.json({ updated });
   } catch (error) {
-    if (error instanceof RequestBodyError) {
-      return NextResponse.json({ message: error.message }, { status: error.status });
-    }
     console.error('Unable to update students in MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to update the student roster.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to update the student roster.') }, { status: 500 });
   }
 }

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
-import { MemberInput, planMemberImport, StoredMember } from '@/lib/member-import';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
-import { readJsonBody, RequestBodyError } from '@/lib/request-body';
+import { getApiErrorMessage, requestExceedsBodyLimit } from '@/lib/database-errors';
+import { planMemberImport, StoredMember } from '@/lib/member-import';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,7 +13,10 @@ export async function POST(request: Request) {
   try {
     const enteredByEmail = await getAuthorizedEmail();
     if (!enteredByEmail) return NextResponse.json({ message: 'Sign in with an active member account.' }, { status: 401 });
-    const payload = await readJsonBody<{ members?: MemberInput[] }>(request);
+    if (requestExceedsBodyLimit(request)) {
+      return NextResponse.json({ message: 'The member upload exceeds 4 MB. Split the file and try again.' }, { status: 413 });
+    }
+    const payload = await request.json();
     const input = Array.isArray(payload?.members) ? payload.members : [];
     if (!input.length || input.length > 2000) {
       return NextResponse.json({ message: 'Import between 1 and 2,000 member rows.' }, { status: 400 });
@@ -81,13 +84,10 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    if (error instanceof RequestBodyError) {
-      return NextResponse.json({ message: error.message }, { status: error.status });
-    }
     if (error && typeof error === 'object' && 'code' in error && error.code === 11000) {
       return NextResponse.json({ message: 'Import conflicts with an existing email or name/team member. Preview the file again.' }, { status: 409 });
     }
     console.error('Unable to import members.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to import members.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to import members.') }, { status: 500 });
   }
 }

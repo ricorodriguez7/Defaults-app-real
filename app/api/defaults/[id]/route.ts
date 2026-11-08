@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { syncCurrentDcAutoAdd } from '@/lib/dc-auto-add';
 import { findActiveMember, findActorMember } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 type RouteContext = { params: { id: string } };
 type ChangeValue = { from: unknown; to: unknown };
@@ -92,7 +92,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
     });
   } catch (error) {
     console.error('Unable to load default history from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load default history.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load default history.') }, { status: 500 });
   }
 }
 
@@ -118,9 +118,6 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       const defaults = transactionDb.collection('defaults');
       const record = await defaults.findOne({ id: params.id }, { session });
       if (!record) throw new Error('NOT_FOUND');
-      if (record.dcStatus === 'Awaiting team decision') {
-        throw new Error('This default is awaiting a DC team decision; manage it in After-DC Discussion.');
-      }
       const actor = await findActorMember(transactionDb, enteredByEmail);
       if (!actor) throw new Error('Your account must be in the active member directory to change defaults.');
 
@@ -389,7 +386,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ message: error.message }, { status: 400 });
     }
     console.error('Unable to update default and append history.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to update the default or sync automatic DC assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to update the default or sync automatic DC assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
   }
 }
 
@@ -407,7 +404,6 @@ export async function DELETE(request: Request, { params }: RouteContext) {
     const result = await withMongoTransaction(async (db, session) => {
       const record = await db.collection('defaults').findOne({ id: params.id }, { session });
       if (!record) throw new Error('NOT_FOUND');
-      if (record.dcStatus === 'Awaiting team decision') throw new Error('This default is awaiting a DC team decision; manage it in After-DC Discussion.');
       if (record.dcStatus === 'Scheduled') throw new Error('Remove this default from its planned DC before removing it.');
       if (record.status === 'locked') throw new Error('Unlock this default before removing it.');
       if (record.status === 'removed') throw new Error('This default is already removed.');
@@ -446,6 +442,6 @@ export async function DELETE(request: Request, { params }: RouteContext) {
       return NextResponse.json({ message: error.message }, { status: 400 });
     }
     console.error('Unable to remove default and append history.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to remove the default or sync automatic DC assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to remove the default or sync automatic DC assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
   }
 }

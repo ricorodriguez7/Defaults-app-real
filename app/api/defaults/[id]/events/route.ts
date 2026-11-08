@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { findActorMember } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 type RouteContext = { params: { id: string } };
 
@@ -27,7 +27,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
     })));
   } catch (error) {
     console.error('Unable to load default events from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load the default timeline.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load the default timeline.') }, { status: 500 });
   }
 }
 
@@ -68,6 +68,6 @@ export async function POST(request: Request, { params }: RouteContext) {
       return NextResponse.json({ message: error.message }, { status: 403 });
     }
     console.error('Unable to append DC note.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to save the DC note.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to save the DC note.') }, { status: 500 });
   }
 }

@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
-import { databaseFailureMessage, getDb } from '@/lib/mongodb';
+import { getApiErrorMessage } from '@/lib/database-errors';
+import { getDb } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 export async function GET() {
   try {
@@ -19,6 +19,6 @@ export async function GET() {
     return NextResponse.json(types);
   } catch (error) {
     console.error('Unable to load default types from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load default types.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load default types.') }, { status: 500 });
   }
 }

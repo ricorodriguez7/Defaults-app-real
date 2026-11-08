@@ -7,7 +7,7 @@ type DcOverview = {
   date: string;
   time: string;
   venue: string;
-  status: 'Planned' | 'Held' | 'Finalised' | 'Cancelled';
+  status: 'Planned' | 'In progress' | 'Completed' | 'Cancelled';
   notes: string;
   autoAdd?: boolean;
   isCurrent?: boolean;
@@ -17,8 +17,6 @@ type DcOverview = {
     attended?: number;
     absent?: number;
     defaultsToBeRemoved?: number;
-    defaultsRecommendedToKeep?: number;
-    awaitingTeamDecision?: number;
     toDiscuss?: number;
     deferred?: number;
   };
@@ -30,7 +28,7 @@ type Entry = {
   attendance: 'Pending' | 'Present' | 'Absent';
   absentReason: string;
   remarks: string;
-  defaults: Array<{ id: string; company: string; typeName: string; date: string; decision: string; recommendation?: string; finalDecision?: string; reason?: string; until?: string; discussionDate?: string }>;
+  defaults: Array<{ id: string; company: string; typeName: string; date: string; decision: string; reason?: string; until?: string; discussionDate?: string }>;
 };
 
 type DcDetail = { dc: DcOverview; entries: Entry[] };
@@ -112,9 +110,6 @@ export default function DCSummaryTab() {
         pending: 0,
         defaultsRemoved: 0,
         defaultsKept: 0,
-        recommendedToRemove: 0,
-        recommendedToKeep: 0,
-        awaitingTeamDecision: 0,
         sentForDiscussion: 0,
         deferred: 0,
         undecided: 0,
@@ -128,14 +123,8 @@ export default function DCSummaryTab() {
       present: entries.filter((entry) => entry.attendance === 'Present').length,
       absent: entries.filter((entry) => entry.attendance === 'Absent').length,
       pending: entries.filter((entry) => entry.attendance === 'Pending').length,
-      defaultsRemoved: defaultRows.filter((item) => item.finalDecision === 'remove').length,
-      defaultsKept: defaultRows.filter((item) => item.finalDecision === 'keep').length,
-      recommendedToRemove: defaultRows.filter((item) => item.recommendation === 'remove' || (!item.recommendation && item.decision === 'Remove')).length,
-      recommendedToKeep: defaultRows.filter((item) => item.recommendation === 'keep' || (!item.recommendation && item.decision === 'Keep')).length,
-      awaitingTeamDecision: detail.dc.status === 'Held'
-        ? entries.filter((entry) => entry.attendance === 'Present').flatMap((entry) => entry.defaults ?? [])
-          .filter((item) => !item.finalDecision && item.recommendation !== 'defer').length
-        : 0,
+      defaultsRemoved: defaultRows.filter((item) => item.decision === 'Remove').length,
+      defaultsKept: defaultRows.filter((item) => item.decision === 'Keep').length,
       sentForDiscussion: defaultRows.filter((item) => item.decision === 'Discuss with team').length,
       deferred: defaultRows.filter((item) => item.decision === 'Defer').length,
       undecided: defaultRows.filter((item) => item.decision === 'Undecided').length,
@@ -144,28 +133,20 @@ export default function DCSummaryTab() {
 
   const absentees = detail?.entries.filter((entry) => entry.attendance === 'Absent') ?? [];
   const decisionRows = useMemo(() => {
-    if (!detail) return [] as Array<{ key: string; label: string; students: string[]; count: number }>;
-    const groups = new Map<string, { key: string; label: string; students: string[] }>();
+    if (!detail) return [] as Array<{ label: string; students: string[]; count: number }>;
+    const groups = new Map<string, { label: string; students: string[] }>();
     for (const entry of detail.entries) {
       for (const defaultItem of entry.defaults ?? []) {
-        const key = defaultItem.recommendation ?? (defaultItem.decision === 'Remove' ? 'remove'
-          : defaultItem.decision === 'Keep' ? 'keep'
-            : defaultItem.decision === 'Defer' ? 'defer'
-              : defaultItem.decision === 'Discuss with team' ? 'discuss' : 'undecided');
-        const label = key === 'remove' ? 'To be removed (considered)'
-          : key === 'keep' ? 'To be kept (not considered)'
-            : key === 'discuss' ? 'Discuss with team'
-              : key === 'defer' ? 'Defer' : 'Undecided';
-        if (!groups.has(key)) groups.set(key, { key, label, students: [] });
-        groups.get(key)?.students.push(`${entry.rollNo} — ${entry.studentName}`);
+        const label = defaultItem.decision || 'Undecided';
+        if (!groups.has(label)) groups.set(label, { label, students: [] });
+        groups.get(label)?.students.push(`${entry.rollNo} — ${entry.studentName}`);
       }
     }
     return Array.from(groups.entries()).map(([label, value]) => ({
-      key: value.key,
-      label: value.label,
+      label,
       students: value.students,
       count: value.students.length,
-    })).filter((row) => decisionFilter === 'all' || row.key === decisionFilter);
+    })).filter((row) => decisionFilter === 'all' || row.label === decisionFilter);
   }, [decisionFilter, detail]);
 
   const carriedForward = detail ? detail.entries.filter((entry) => (entry.defaults ?? []).some((item) => ['Undecided', 'Discuss with team', 'Defer'].includes(item.decision))) : [];
@@ -178,7 +159,7 @@ export default function DCSummaryTab() {
       present: dc.counts?.attended ?? 0,
       absent: dc.counts?.absent ?? 0,
       removed: dc.counts?.defaultsToBeRemoved ?? 0,
-      kept: dc.counts?.defaultsRecommendedToKeep ?? 0,
+      kept: dc.counts?.attended ?? 0,
       deferred: dc.counts?.deferred ?? 0,
       discussed: dc.counts?.toDiscuss ?? 0,
     }));
@@ -228,11 +209,8 @@ export default function DCSummaryTab() {
               ['Present', summaryCards.present],
               ['Absent', summaryCards.absent],
               ['Pending', summaryCards.pending],
-              ['Defaults removed (final)', summaryCards.defaultsRemoved],
-              ['Defaults kept (final)', summaryCards.defaultsKept],
-              ['Recommended to remove', summaryCards.recommendedToRemove],
-              ['Recommended to keep', summaryCards.recommendedToKeep],
-              ['Awaiting team decision', summaryCards.awaitingTeamDecision],
+              ['Defaults removed', summaryCards.defaultsRemoved],
+              ['Defaults kept', summaryCards.defaultsKept],
               ['Sent for team discussion', summaryCards.sentForDiscussion],
               ['Deferred', summaryCards.deferred],
               ['Undecided', summaryCards.undecided],
@@ -261,16 +239,9 @@ export default function DCSummaryTab() {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h3 className="text-lg font-semibold text-slate-900">Decision status</h3>
               <div className="mt-3 flex flex-wrap gap-2">
-                {[
-                  ['all', 'All'],
-                  ['undecided', 'Undecided'],
-                  ['remove', 'To be removed (considered)'],
-                  ['keep', 'To be kept (not considered)'],
-                  ['defer', 'Defer'],
-                  ['discuss', 'Discuss with team'],
-                ].map(([option, label]) => (
+                {['all', 'Undecided', 'Remove', 'Keep', 'Discuss with team', 'Defer'].map((option) => (
                   <button key={option} type="button" onClick={() => setDecisionFilter(option)} className={`min-h-9 rounded-full px-3 py-1.5 text-xs font-medium ${decisionFilter === option ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
-                    {label}
+                    {option === 'all' ? 'All' : option}
                   </button>
                 ))}
               </div>

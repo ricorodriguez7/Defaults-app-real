@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { isPlacementTeam } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 function normalizeText(value: string) {
   return value.trim().replace(/\s+/g, ' ');
@@ -61,7 +61,7 @@ export async function GET(request: Request) {
     return NextResponse.json(members);
   } catch (error) {
     console.error('Unable to load members from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load the member directory.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load the member directory.') }, { status: 500 });
   }
 }
 
@@ -112,6 +112,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ member }, { status: 201 });
   } catch (error) {
     console.error('Unable to add member.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to add the member.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to add the member.') }, { status: 500 });
   }
 }

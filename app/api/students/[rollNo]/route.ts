@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { findActorMember } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 type RouteContext = { params: { rollNo: string } };
 
@@ -40,17 +40,11 @@ export async function GET(_request: Request, { params }: RouteContext) {
         .project({ _id: 0, id: 1, date: 1, time: 1, status: 1 }).toArray()
       : [];
     const dcById = new Map(dcs.map((dc) => [dc.id, dc]));
-    const defaultById = new Map(defaults.map((record) => [record.id, record]));
     const decisionsByDefaultId = new Map<string, Array<{
       dcId: string;
       dcDate: string;
       dcTime: string;
       decision: string;
-      recommendation: string;
-      recommendationNotes: string;
-      finalDecision: string;
-      finalUntil: string;
-      awaitingTeamDecision: boolean;
       until: string;
       remarks: string;
     }>>();
@@ -60,24 +54,13 @@ export async function GET(_request: Request, { params }: RouteContext) {
       if (!dc) continue;
       for (const item of entry.decisions ?? []) {
         const history = decisionsByDefaultId.get(item.defaultId) ?? [];
-        const recommendation = item.recommendation ?? (item.decision === 'Remove' ? 'remove'
-          : item.decision === 'Keep' ? 'keep'
-            : item.decision === 'Defer' ? 'defer'
-              : item.decision === 'Discuss with team' ? 'discuss' : 'undecided');
-        const finalDecision = item.finalDecision ?? '';
-        const linkedDefault = defaultById.get(item.defaultId);
         history.push({
           dcId: dc.id,
           dcDate: dc.date,
           dcTime: dc.time ?? '',
-          decision: finalDecision || item.decision || 'Undecided',
-          recommendation,
-          recommendationNotes: item.recommendationNotes ?? item.reason ?? '',
-          finalDecision,
-          finalUntil: item.finalUntil ?? '',
-          awaitingTeamDecision: dc.status === 'Held' && linkedDefault?.dcStatus === 'Awaiting team decision' && !finalDecision,
+          decision: item.decision ?? 'Undecided',
           until: item.until ?? '',
-          remarks: item.finalRemarks ?? entry.remarks ?? '',
+          remarks: entry.remarks ?? '',
         });
         decisionsByDefaultId.set(item.defaultId, history);
       }
@@ -102,7 +85,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
     });
   } catch (error) {
     console.error('Unable to load student history from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load student history.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load student history.') }, { status: 500 });
   }
 }
 
@@ -158,6 +141,6 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ message: error.message }, { status: 400 });
     }
     console.error('Unable to update student lock history.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to update student lock status.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to update student lock status.') }, { status: 500 });
   }
 }

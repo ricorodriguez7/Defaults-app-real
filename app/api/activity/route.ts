@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
-import { databaseFailureMessage, getDb } from '@/lib/mongodb';
+import { getApiErrorMessage } from '@/lib/database-errors';
+import { getDb } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -80,6 +81,6 @@ export async function GET(request: Request) {
     }));
   } catch (error) {
     console.error('Unable to load activity feed from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load activity.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load activity.') }, { status: 500 });
   }
 }

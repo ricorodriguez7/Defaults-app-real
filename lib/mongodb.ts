@@ -17,37 +17,22 @@ type MongoGlobal = typeof globalThis & {
 
 const globalState = globalThis as MongoGlobal;
 
-export function databaseFailureMessage(error: unknown, fallback: string) {
-  const visited = new Set<unknown>();
-  let current = error;
-  while (current && typeof current === 'object' && !visited.has(current)) {
-    visited.add(current);
-    const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
-    if (candidate.message === 'Could not reach the database, please try again' ||
-      (typeof candidate.name === 'string' &&
-        ['MongoServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError', 'MongoTimeoutError', 'MongoTopologyClosedError'].includes(candidate.name))) {
-      return 'Could not reach the database, please try again';
-    }
-    current = candidate.cause;
-  }
-  return fallback;
-}
-
 function getClientPromise() {
   if (!uri) {
-    throw new Error('Could not reach the database, please try again');
+    throw new Error('MONGODB_URI is not configured.');
   }
 
   if (!globalState._mongoClientPromise) {
-    const client = new MongoClient(uri, {
+    const clientPromise = new MongoClient(uri, {
       maxPoolSize: 5,
       serverSelectionTimeoutMS: 8000,
+    }).connect();
+    globalState._mongoClientPromise = clientPromise;
+    void clientPromise.catch(() => {
+      if (globalState._mongoClientPromise === clientPromise) {
+        globalState._mongoClientPromise = undefined;
+      }
     });
-    const connection = client.connect().catch((error: unknown) => {
-      globalState._mongoClientPromise = undefined;
-      throw new Error('Could not reach the database, please try again', { cause: error });
-    });
-    globalState._mongoClientPromise = connection;
   }
 
   return globalState._mongoClientPromise;
@@ -171,45 +156,6 @@ async function setupDatabase(db: Db) {
   await db.collection('defaults').updateMany(
     { dcStatus: { $exists: false } },
     { $set: { dcStatus: 'Not scheduled', dcId: null } },
-  );
-
-  const completedDcs = await db.collection('dcs').find({ status: 'Completed' }, { projection: { _id: 0, id: 1 } }).toArray();
-  for (const dc of completedDcs) {
-    const dcEntries = await db.collection('dc_entries').find({ dcId: dc.id }).toArray();
-    for (const entry of dcEntries) {
-      const decisions = (entry.decisions ?? []).map((item: Record<string, unknown>) => {
-        const recommendation = item.decision === 'Remove' ? 'remove'
-          : item.decision === 'Keep' ? 'keep'
-            : item.decision === 'Defer' ? 'defer'
-              : item.decision === 'Discuss with team' ? 'discuss'
-                : 'undecided';
-        return {
-          ...item,
-          recommendation: item.recommendation ?? recommendation,
-          ...(item.decision === 'Remove' ? { finalDecision: item.finalDecision ?? 'remove' } : {}),
-          ...(item.decision === 'Keep' ? { finalDecision: item.finalDecision ?? 'keep' } : {}),
-        };
-      });
-      await db.collection('dc_entries').updateOne({ _id: entry._id }, { $set: { decisions } });
-    }
-  }
-  await db.collection('dcs').updateMany(
-    { status: 'Completed' },
-    [{
-      $set: {
-        status: 'Finalised',
-        finalisedBy: { $ifNull: ['$completedBy', ''] },
-        finalisedAt: { $ifNull: ['$completedAt', new Date()] },
-      },
-    }],
-  );
-  await db.collection('dcs').updateMany(
-    { status: 'In progress', heldAt: { $exists: true } },
-    { $set: { status: 'Held' } },
-  );
-  await db.collection('dcs').updateMany(
-    { status: 'In progress' },
-    { $set: { status: 'Planned' } },
   );
 
   if (hasLegacyAllowlist) {
@@ -342,11 +288,13 @@ export async function getDb() {
   const db = client.db(databaseName);
 
   if (!globalState._databaseSetupPromise) {
-    const setup = setupDatabase(db).catch((error: unknown) => {
-      globalState._databaseSetupPromise = undefined;
-      throw error;
+    const setupPromise = setupDatabase(db);
+    globalState._databaseSetupPromise = setupPromise;
+    void setupPromise.catch(() => {
+      if (globalState._databaseSetupPromise === setupPromise) {
+        globalState._databaseSetupPromise = undefined;
+      }
     });
-    globalState._databaseSetupPromise = setup;
   }
 
   await globalState._databaseSetupPromise;

@@ -2,8 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import { downloadWorkbook } from '@/lib/excel-download';
 
-type DCStatus = 'Planned' | 'Held' | 'Finalised' | 'Cancelled';
+type DCStatus = 'Planned' | 'In progress' | 'Completed' | 'Cancelled';
 type Attendance = 'Pending' | 'Present' | 'Absent';
 type DCDecision = 'Undecided' | 'Remove' | 'Keep' | 'Discuss with team' | 'Defer';
 
@@ -15,7 +16,7 @@ type DCRecord = {
   status: DCStatus;
   notes: string;
   cancelReason?: string;
-  counts: { studentsCalled: number; yetToAttend: number; attended: number; absent: number; defaultsToBeRemoved: number; defaultsRecommendedToKeep: number; awaitingTeamDecision: number; toDiscuss: number; deferred: number };
+  counts: { studentsCalled: number; yetToAttend: number; attended: number; absent: number; defaultsToBeRemoved: number; toDiscuss: number; deferred: number };
 };
 
 type AutoAddResult = { added: number; defaultsAdded: number; failures: string[]; message: string };
@@ -27,7 +28,7 @@ type PendingDefault = {
   company: string;
   typeName: string;
   date: string;
-  dcStatus: 'Not scheduled' | 'Scheduled' | 'To discuss' | 'Deferred' | 'Decided' | 'Awaiting team decision';
+  dcStatus: 'Not scheduled' | 'Scheduled' | 'To discuss' | 'Deferred' | 'Decided';
   discussion?: { reason?: string; discussionDate?: string; notes?: Array<{ byName: string; at: string; text: string }>; raisedByName?: string };
   deferral?: { until?: string; reason?: string; byName?: string; history?: Array<{ until: string; reason: string; at: string; byName?: string }> };
 };
@@ -50,10 +51,6 @@ type DCDefault = {
   reason?: string;
   until?: string;
   discussionDate?: string;
-  recommendationNotes?: string;
-  recommendationByName?: string;
-  recommendationAt?: string;
-  recommendationHistory?: Array<{ recommendation: string; notes: string; byName?: string; at: string }>;
 };
 
 type DCEntry = {
@@ -87,16 +84,10 @@ async function responseJson(response: Response) {
 }
 
 function statusStyle(status: string) {
-  if (status === 'Finalised' || status === 'Present' || status === 'Keep') return 'status-badge status-success';
+  if (status === 'Completed' || status === 'Present' || status === 'Keep') return 'status-badge status-success';
   if (status === 'Cancelled' || status === 'Absent' || status === 'Remove') return 'status-badge status-danger';
   if (status === 'Pending' || status === 'Undecided' || status === 'Planned') return 'status-badge status-pending';
   return 'status-badge';
-}
-
-function recommendationLabel(decision: DCDecision) {
-  if (decision === 'Remove') return 'To be removed (considered)';
-  if (decision === 'Keep') return 'To be kept (not considered)';
-  return decision;
 }
 
 export default function DCTab({
@@ -469,8 +460,8 @@ export default function DCTab({
     event.preventDefault();
     if (!detail || !decisionDraft) return;
     const { defaultId, rollNo, decision, reason, until, discussionDate } = decisionDraft;
-    if ((decision === 'Remove' || decision === 'Defer') && !reason.trim()) {
-      setError('Recommendation notes are required for removal and deferral.');
+    if ((decision === 'Discuss with team' || decision === 'Defer') && !reason.trim()) {
+      setError(decision === 'Defer' ? 'A deferral reason is required.' : 'A discussion reason is required.');
       return;
     }
     if (decision === 'Defer' && !until) {
@@ -482,7 +473,7 @@ export default function DCTab({
       defaultId,
       rollNo,
       decision,
-      recommendationNotes: reason.trim(),
+      reason: reason.trim(),
       until,
       discussionDate,
     });
@@ -491,7 +482,7 @@ export default function DCTab({
 
   async function chooseDecision(entry: DCEntry, record: DCDefault, decision: DCDecision) {
     if (!detail || record.decision === decision) return;
-    if (decision === 'Remove' || decision === 'Discuss with team' || decision === 'Defer') {
+    if (decision === 'Discuss with team' || decision === 'Defer') {
       setError('');
       setDecisionDraft({
         defaultId: record.id,
@@ -552,7 +543,7 @@ export default function DCTab({
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'DC meetings');
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaries), 'Attendance summary');
-      XLSX.writeFile(workbook, all ? 'all-dc-meetings.xlsx' : 'dc-meeting.xlsx');
+      downloadWorkbook(workbook, all ? 'all-dc-meetings.xlsx' : 'dc-meeting.xlsx');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to export DC data.');
     } finally {
@@ -563,9 +554,9 @@ export default function DCTab({
   async function completeDc() {
     if (!detail || !completionSummary) return;
     const absentRollNos = detail.entries.filter((entry) => entry.attendance === 'Absent').map((entry) => entry.rollNo);
-    const confirmation = `Close this DC meeting?\n\n${completionSummary.present} present, ${completionSummary.absent} absent, ${completionSummary.remove} recommended for removal, ${completionSummary.keep} recommended to keep, ${completionSummary.undecided + completionSummary.discuss} awaiting team discussion, ${completionSummary.defer} deferred.\n\nAbsent students: ${absentRollNos.join(', ') || 'None'}\n\nNo remove/keep recommendation will be applied until the DC is finalised.`;
+    const confirmation = `Complete this DC?\n\n${completionSummary.present} present, ${completionSummary.absent} absent, ${completionSummary.remove} defaults to remove, ${completionSummary.keep} to keep, ${completionSummary.undecided} undecided, ${completionSummary.discuss} to discuss, ${completionSummary.defer} deferred.\n\nAbsent students: ${absentRollNos.join(', ') || 'None'}`;
     if (!window.confirm(confirmation)) return;
-    await mutateDc(detail.dc.id, { action: 'hold' }, 'DC meeting closed and held. Recommendations are awaiting final decisions.');
+    await mutateDc(detail.dc.id, { action: 'complete' }, 'DC completed. Present defaults were decided; absent and undecided defaults returned to the pending list.');
   }
 
   async function cancelDc(dc: DCRecord) {
@@ -774,17 +765,15 @@ export default function DCTab({
               <span>Yet to attend <strong>{dc.counts.yetToAttend}</strong></span>
               <span>Attended <strong>{dc.counts.attended}</strong></span>
               <span>Absent <strong>{dc.counts.absent}</strong></span>
-              <span>Recommended to remove <strong>{dc.counts.defaultsToBeRemoved}</strong></span>
-              <span>Recommended to keep <strong>{dc.counts.defaultsRecommendedToKeep}</strong></span>
-              <span>Awaiting team decision <strong>{dc.counts.awaitingTeamDecision}</strong></span>
+              <span>Defaults to remove <strong>{dc.counts.defaultsToBeRemoved}</strong></span>
               <span>To discuss <strong>{dc.counts.toDiscuss}</strong></span>
               <span>Deferred <strong>{dc.counts.deferred}</strong></span>
             </div>
-            {dc.status === 'Planned' && <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" className={`${buttonClass} btn-secondary`} onClick={() => { setShowPlanForm(false); openDc(dc.id); }}>Open planner</button>
+            {(dc.status === 'Planned' || dc.status === 'In progress') && <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" className={`${buttonClass} btn-secondary`} onClick={() => { setShowPlanForm(false); openDc(dc.id); }}>{dc.status === 'Planned' ? 'Open planner' : 'Open live DC'}</button>
               <button type="button" className={`${buttonClass} btn-danger`} onClick={() => void cancelDc(dc)}>Cancel DC</button>
             </div>}
-            {dc.status !== 'Planned' && <button type="button" className={`${buttonClass} btn-secondary mt-3`} onClick={() => { setShowPlanForm(false); openDc(dc.id); }}>View details</button>}
+            {dc.status !== 'Planned' && dc.status !== 'In progress' && <button type="button" className={`${buttonClass} btn-secondary mt-3`} onClick={() => { setShowPlanForm(false); openDc(dc.id); }}>View details</button>}
           </article>)}
         </div>
       </section>
@@ -824,7 +813,7 @@ export default function DCTab({
             ] as const).map(([filter, label]) => <button key={filter} type="button" aria-pressed={attendanceFilter === filter} className={`${buttonClass} ${attendanceFilter === filter ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAttendanceFilter(filter)}>{label}</button>)}
             <span className="self-center text-sm text-slate-600">{filteredEntries.length} of {attendanceCounts.total} students</span>
           </div>
-          {attendanceNearlyComplete && detail.dc.status === 'Planned' &&
+          {attendanceNearlyComplete && (detail.dc.status === 'Planned' || detail.dc.status === 'In progress') &&
             <button type="button" className={`${buttonClass} btn-danger mt-3`} disabled={busy} onClick={() => void markPendingAbsent()}>
               Mark all {attendanceCounts.pending} pending as absent
             </button>}
@@ -857,35 +846,32 @@ export default function DCTab({
             {expandedRollNo === entry.rollNo && <div className="border-t border-slate-200 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">{entry.studentName}</h3><p className="text-sm text-slate-500">{entry.rollNo}</p></div><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => void onOpenStudent(entry.rollNo)}>Student page &amp; history</button></div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="text-sm font-medium">Attendance<select disabled={detail.dc.status !== 'Planned' || busy} value={entry.attendance} onChange={(event) => void updateAttendance(entry, event.target.value as Attendance)} className={fieldClass}><option>Pending</option><option>Present</option><option>Absent</option></select></label>
-              {entry.attendance === 'Absent' && <label className="text-sm font-medium">Absent reason (optional)<input disabled={detail.dc.status !== 'Planned' || busy} defaultValue={entry.absentReason} onBlur={(event) => void saveAbsentReason(entry, event.target.value)} placeholder="e.g. informed in advance" maxLength={500} className={fieldClass} /></label>}
+              <label className="text-sm font-medium">Attendance<select disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} value={entry.attendance} onChange={(event) => void updateAttendance(entry, event.target.value as Attendance)} className={fieldClass}><option>Pending</option><option>Present</option><option>Absent</option></select></label>
+              {entry.attendance === 'Absent' && <label className="text-sm font-medium">Absent reason (optional)<input disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} defaultValue={entry.absentReason} onBlur={(event) => void saveAbsentReason(entry, event.target.value)} placeholder="e.g. informed in advance" maxLength={500} className={fieldClass} /></label>}
             </div>
             {entry.defaults.length > 0 && <div className="mt-4 space-y-3">
               <h4 className="font-semibold">Defaults at this DC</h4>
-              {entry.defaults.map((record) => <div key={record.id} className="grid gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_16rem] sm:items-center">
-                <div><strong>{record.company}</strong><p className="text-sm text-slate-600">{record.typeName} · logged {record.date} · current status {record.status}</p><span className={statusStyle(record.decision)}>{recommendationLabel(record.decision)}</span></div>
-                <label className="text-sm font-medium">Recommendation<select disabled={detail.dc.status !== 'Planned' || busy} value={record.decision} onChange={(event) => void chooseDecision(entry, record, event.target.value as DCDecision)} className={fieldClass}><option value="Undecided">Undecided</option><option value="Remove">To be removed (considered)</option><option value="Keep">To be kept (not considered)</option><option value="Defer">Defer</option><option value="Discuss with team">Discuss with team</option></select></label>
-                {(record.recommendationNotes || record.recommendationByName || record.recommendationAt) && <p className="whitespace-pre-wrap text-sm text-slate-600 sm:col-span-2">Recommendation notes: {record.recommendationNotes || 'No notes'}{record.recommendationByName ? ` · ${record.recommendationByName}` : ''}{record.recommendationAt ? ` · ${new Date(record.recommendationAt).toLocaleString()}` : ''}</p>}
-                {!!record.recommendationHistory?.length && <details className="text-sm sm:col-span-2"><summary className="cursor-pointer font-medium">Previous recommendations ({record.recommendationHistory.length})</summary><ul className="mt-2 space-y-1 text-slate-600">{record.recommendationHistory.map((history, index) => <li key={`${record.id}-recommendation-${index}`}>{history.recommendation} — {history.notes || 'No notes'}{history.byName ? ` · ${history.byName}` : ''} · {new Date(history.at).toLocaleString()}</li>)}</ul></details>}
+              {entry.defaults.map((record) => <div key={record.id} className="grid gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-[minmax(0,1fr)_12rem] sm:items-center">
+                <div><strong>{record.company}</strong><p className="text-sm text-slate-600">{record.typeName} · logged {record.date} · current status {record.status}</p><span className={statusStyle(record.decision)}>{record.decision}</span></div>
+                <label className="text-sm font-medium">Decision<select disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} value={record.decision} onChange={(event) => void chooseDecision(entry, record, event.target.value as DCDecision)} className={fieldClass}><option>Undecided</option><option>Remove</option><option>Keep</option><option>Discuss with team</option><option>Defer</option></select></label>
                 {decisionDraft?.defaultId === record.id && <form onSubmit={(event) => void saveDecisionDraft(event)} className="space-y-3 rounded-lg border border-indigo-100 bg-white p-3 sm:col-span-2">
-                  <p className="text-sm font-semibold">Recommendation notes {decisionDraft.decision === 'Remove' || decisionDraft.decision === 'Defer' ? '(required)' : '(optional)'}</p>
-                  <label className="block text-sm font-medium">Notes<textarea required={decisionDraft.decision === 'Remove' || decisionDraft.decision === 'Defer'} value={decisionDraft.reason} onChange={(event) => setDecisionDraft({ ...decisionDraft, reason: event.target.value })} rows={2} maxLength={2000} className={fieldClass} /></label>
+                  <p className="text-sm font-semibold">{decisionDraft.decision === 'Defer' ? 'Deferral details' : 'Team discussion details'}</p>
+                  <label className="block text-sm font-medium">Required reason *<textarea required value={decisionDraft.reason} onChange={(event) => setDecisionDraft({ ...decisionDraft, reason: event.target.value })} rows={2} maxLength={2000} className={fieldClass} /></label>
                   {decisionDraft.decision === 'Defer' && <div className="block text-sm font-medium">Deferred until *<select aria-label="Deferred until" value={decisionDraft.until === 'next_dc' ? 'next_dc' : decisionDraft.until ? 'specific' : ''} onChange={(event) => setDecisionDraft({ ...decisionDraft, until: event.target.value === 'next_dc' ? 'next_dc' : '' })} className={fieldClass}><option value="">Choose date or next DC</option><option value="specific">Specific date</option><option value="next_dc">Next DC</option></select>{decisionDraft.until !== 'next_dc' && <input aria-label="Specific deferral date" required type="date" value={decisionDraft.until} onChange={(event) => setDecisionDraft({ ...decisionDraft, until: event.target.value })} className={fieldClass} />}</div>}
-                  <div className="flex flex-wrap gap-2"><button type="submit" className={`${buttonClass} btn-primary`} disabled={busy}>Save recommendation</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => setDecisionDraft(null)} disabled={busy}>Cancel</button></div>
+                  {decisionDraft.decision === 'Discuss with team' && <label className="block text-sm font-medium">Discussion date (optional)<input type="date" value={decisionDraft.discussionDate} onChange={(event) => setDecisionDraft({ ...decisionDraft, discussionDate: event.target.value })} className={fieldClass} /></label>}
+                  <div className="flex flex-wrap gap-2"><button type="submit" className={`${buttonClass} btn-primary`} disabled={busy}>Save decision</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => setDecisionDraft(null)} disabled={busy}>Cancel</button></div>
                 </form>}
               </div>)}
             </div>}
-            <label className="mt-4 block text-sm font-medium">Remarks<textarea disabled={detail.dc.status !== 'Planned' || busy} defaultValue={entry.remarks} onBlur={(event) => void saveRemarks(entry, event.target.value)} rows={2} maxLength={2000} placeholder="Meeting remarks…" className={fieldClass} /></label>
+            <label className="mt-4 block text-sm font-medium">Remarks<textarea disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} defaultValue={entry.remarks} onBlur={(event) => void saveRemarks(entry, event.target.value)} rows={2} maxLength={2000} placeholder="Reason accepted, warning issued…" className={fieldClass} /></label>
             {detail.dc.status === 'Planned' && <button type="button" className={`${buttonClass} btn-danger mt-3`} onClick={() => void removeStudent(entry)} disabled={busy}>Remove student from DC</button>}
             </div>}
           </article>)}
         </div>
-        {detail.dc.status === 'Planned' && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
-          <p className="text-sm text-slate-600">{attendanceComplete ? 'All students have an attendance status.' : 'Mark every student Present or Absent before closing the meeting.'}</p>
-          <button type="button" className={`${buttonClass} btn-primary`} disabled={!attendanceComplete || busy} onClick={() => void completeDc()}>Close DC meeting</button>
+        {(detail.dc.status === 'Planned' || detail.dc.status === 'In progress') && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
+          <p className="text-sm text-slate-600">{attendanceComplete ? 'All students have an attendance status.' : 'Mark every student Present or Absent before completing this DC.'}</p>
+          <button type="button" className={`${buttonClass} btn-primary`} disabled={!attendanceComplete || busy} onClick={() => void completeDc()}>Complete DC</button>
         </div>}
-        {detail.dc.status === 'Held' && <p className="mt-5 rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm text-indigo-900">Meeting held. Attendance and recommendations are frozen; record final outcomes in After-DC Discussion.</p>}
-        {detail.dc.status === 'Finalised' && <p className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">This DC is finalised and read-only.</p>}
         {detail.dc.status === 'Cancelled' && <p className="mt-5 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">Cancelled: {detail.dc.cancelReason}</p>}
       </section>}
     </div>

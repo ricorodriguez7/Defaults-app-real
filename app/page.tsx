@@ -3,8 +3,8 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { signIn, signOut, useSession } from 'next-auth/react';
 import * as XLSX from 'xlsx';
+import { downloadWorkbook, MAX_EXCEL_BYTES, MAX_EXCEL_FILE_MESSAGE } from '@/lib/excel-download';
 import DCSummaryTab from './dc-summary';
-import DCAfterDiscussionTab from './dc-discussion';
 import DCTab from './dc-tab';
 
 type Student = {
@@ -46,7 +46,7 @@ type DefaultRecord = {
   lockedAt?: string;
   dcReference?: string;
   dcDate?: string;
-  dcStatus?: 'Not scheduled' | 'Scheduled' | 'To discuss' | 'Deferred' | 'Decided' | 'Awaiting team decision';
+  dcStatus?: 'Not scheduled' | 'Scheduled' | 'To discuss' | 'Deferred' | 'Decided';
   discussion?: {
     reason: string;
     discussionDate?: string;
@@ -85,11 +85,6 @@ type StudentHistoryDefault = DefaultRecord & {
     dcDate: string;
     dcTime: string;
     decision: string;
-    recommendation: string;
-    recommendationNotes: string;
-    finalDecision: string;
-    finalUntil: string;
-    awaitingTeamDecision: boolean;
     until: string;
     remarks: string;
   }>;
@@ -98,24 +93,7 @@ type StudentHistoryDefault = DefaultRecord & {
 type ViewName = 'defaults' | 'students' | 'dc' | 'members' | 'activity';
 
 const normalizeRollNo = (value: string) => String(value ?? '').trim().toUpperCase();
-const MAX_IMPORT_SIZE_BYTES = 4 * 1024 * 1024;
-const MAX_IMPORT_SIZE_MESSAGE = 'Files and import requests must be under 4 MB. Split the spreadsheet and upload smaller files.';
 const teamLabel = (team: string) => team === 'placement_cell' ? 'Placement cell' : team === 'summer_internship' ? 'Summer internship' : team;
-const todayInIndia = () => {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-};
-const jsonImportBody = (payload: unknown) => {
-  const body = JSON.stringify(payload);
-  if (new Blob([body]).size > MAX_IMPORT_SIZE_BYTES) throw new Error(MAX_IMPORT_SIZE_MESSAGE);
-  return body;
-};
 const isSelectableTeam = (team: string): team is 'placement_cell' | 'summer_internship' =>
   team === 'placement_cell' || team === 'summer_internship';
 const autoAddNotice = (result?: { added?: number; failures?: string[]; message?: string }) =>
@@ -128,9 +106,7 @@ async function responseJson(response: Response) {
 }
 
 function parseSheet(file: File) {
-  if (file.size > MAX_IMPORT_SIZE_BYTES) {
-    return Promise.reject(new Error(MAX_IMPORT_SIZE_MESSAGE));
-  }
+  if (file.size > MAX_EXCEL_BYTES) throw new Error(MAX_EXCEL_FILE_MESSAGE);
   return file.arrayBuffer().then((buffer) => {
     const workbook = XLSX.read(buffer, { type: 'array' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -138,11 +114,17 @@ function parseSheet(file: File) {
   });
 }
 
+function jsonBodyWithinLimit(value: unknown) {
+  const body = JSON.stringify(value);
+  if (new TextEncoder().encode(body).byteLength > MAX_EXCEL_BYTES) throw new Error(MAX_EXCEL_FILE_MESSAGE);
+  return body;
+}
+
 export default function HomePage() {
   const { data: session, status: sessionStatus } = useSession();
   const accountEmail = session?.user?.email?.toLowerCase() ?? '';
   const [view, setView] = useState<ViewName>('defaults');
-  const [dcSubView, setDcSubView] = useState<'planner' | 'summary' | 'after-discussion'>('planner');
+  const [dcSubView, setDcSubView] = useState<'planner' | 'summary'>('planner');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(false);
@@ -153,7 +135,7 @@ export default function HomePage() {
   const [rollNumber, setRollNumber] = useState('');
   const [company, setCompany] = useState('');
   const [typeId, setTypeId] = useState('');
-  const [date, setDate] = useState(todayInIndia());
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState('');
   const [loggedByMemberId, setLoggedByMemberId] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
@@ -290,7 +272,7 @@ export default function HomePage() {
       setRollNumber('');
       setCompany('');
       setTypeId(defaultTypes[0]?.id || '');
-      setDate(todayInIndia());
+      setDate(new Date().toISOString().slice(0, 10));
       setNotes('');
       setSelectedStudent(null);
       setLookupError('');
@@ -316,8 +298,9 @@ export default function HomePage() {
           : Number(row['Number of defaults'] ?? row.numberOfDefaults),
         lockPenaltyStatus: String(row['Lock / penalty status'] ?? row.lockPenaltyStatus ?? '').trim(),
       })).filter((row) => row.name && row.rollNo);
+      const body = jsonBodyWithinLimit({ roster });
       await responseJson(await fetch('/api/students', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: jsonImportBody({ roster }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
       }));
       setStatusMessage('Student roster updated.');
       await loadDashboard();
@@ -338,8 +321,9 @@ export default function HomePage() {
         email: String(row.Email ?? row.email ?? '').trim(),
         team: String(row.Team ?? row.team ?? '').trim(),
       }));
+      const body = jsonBodyWithinLimit({ members: uploadedMembers });
       const preview = await responseJson(await fetch('/api/members/bulk-preview', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: jsonImportBody({ members: uploadedMembers }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
       }));
       setBulkRows(uploadedMembers);
       setBulkPreview(preview);
@@ -413,10 +397,11 @@ export default function HomePage() {
 
   async function applyMemberPreview() {
     try {
+      const body = jsonBodyWithinLimit({ members: bulkRows });
       const result = await responseJson(await fetch('/api/members/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: jsonImportBody({ members: bulkRows }),
+        body,
       }));
       setStatusMessage(`Member upload complete: ${result.counts.add} added, ${result.counts.update} updated, ${result.counts.skip} skipped.`);
       setBulkRows([]);
@@ -435,7 +420,7 @@ export default function HomePage() {
       ['Example Intern', 'summer_internship', ''],
     ]);
     XLSX.utils.book_append_sheet(workbook, sheet, 'Members');
-    XLSX.writeFile(workbook, 'member-template.xlsx');
+    downloadWorkbook(workbook, 'member-template.xlsx');
   }
 
   const filteredMembers = useMemo(() => {
@@ -688,7 +673,7 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summary), 'Summary');
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(details), 'Details');
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(historyRows), 'History');
-      XLSX.writeFile(workbook, 'default-tracker.xlsx');
+      downloadWorkbook(workbook, 'default-tracker.xlsx');
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : 'Unable to export workbook.');
     }
@@ -735,10 +720,9 @@ export default function HomePage() {
               <div className="ml-8 mt-2 space-y-1 rounded-xl border border-slate-800 bg-slate-900 p-2">
                 {[
                   ['planner', 'Planner'],
-                  ['after-discussion', 'After-DC Discussion'],
                   ['summary', 'Summary'],
                 ].map(([key, label]) => (
-                  <button key={key} type="button" onClick={() => setDcSubView(key as 'planner' | 'summary' | 'after-discussion')} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${dcSubView === key ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
+                  <button key={key} type="button" onClick={() => setDcSubView(key as 'planner' | 'summary')} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${dcSubView === key ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
                     {label}
                   </button>
                 ))}
@@ -761,7 +745,7 @@ export default function HomePage() {
                 <button type="button" className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg text-slate-700 md:hidden" onClick={() => setSidebarOpen((current) => !current)} aria-label="Toggle navigation">☰</button>
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-indigo-600">{view === 'dc' ? 'Disciplinary Committee' : view === 'defaults' ? 'Defaults' : view === 'students' ? 'Students' : view === 'members' ? 'Members' : 'Activity'}</p>
-                  <h2 className="mt-1 text-2xl font-bold text-slate-900">{view === 'dc' ? (dcSubView === 'summary' ? 'DC Summary' : dcSubView === 'after-discussion' ? 'After-DC Discussion' : 'DC Planner') : view === 'defaults' ? 'Defaults' : view === 'students' ? 'Student roster' : view === 'members' ? 'Members' : 'Activity log'}</h2>
+                  <h2 className="mt-1 text-2xl font-bold text-slate-900">{view === 'dc' ? (dcSubView === 'summary' ? 'DC Summary' : 'DC Planner') : view === 'defaults' ? 'Defaults' : view === 'students' ? 'Student roster' : view === 'members' ? 'Members' : 'Activity log'}</h2>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -832,7 +816,6 @@ export default function HomePage() {
       </>}
 
       {view === 'dc' && dcSubView === 'planner' && <DCTab onRefresh={loadDashboard} onOpenStudent={openStudentFromDc} />}
-      {view === 'dc' && dcSubView === 'after-discussion' && <DCAfterDiscussionTab />}
       {view === 'dc' && dcSubView === 'summary' && <DCSummaryTab />}
 
       {view === 'students' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -849,29 +832,19 @@ export default function HomePage() {
                   <p className="mt-1 text-sm text-slate-600">Default date: {record.date} · Logged by {record.loggedByName} ({teamLabel(record.team)})</p>
                 </div>
                 <span className={`status-badge ${record.status === 'locked' ? 'status-pending' : record.status === 'removed' ? 'status-danger' : 'status-success'}`}>
-                  {record.dcStatus === 'Awaiting team decision' ? 'Awaiting team decision' : record.status === 'logged' ? 'Logged' : record.status === 'locked' ? 'Locked' : 'Removed'}
+                  {record.status === 'logged' ? 'Logged' : record.status === 'locked' ? 'Locked' : 'Removed'}
                 </span>
               </div>
               <div className="mt-3 space-y-2 border-t pt-3">
                 {(record.decisionHistory ?? []).length ? record.decisionHistory.map((item, index) => {
-                  const recommendation = item.recommendation === 'remove' ? 'To be removed (considered)'
-                    : item.recommendation === 'keep' ? 'To be kept (not considered)'
-                      : item.recommendation === 'discuss' ? 'Discuss with team'
-                        : item.recommendation === 'defer' ? 'Defer' : 'Undecided';
-                  const finalDecision = item.finalDecision === 'remove' ? 'Remove'
-                    : item.finalDecision === 'keep' ? 'Keep/lock'
-                      : item.finalDecision === 'defer' ? 'Defer'
-                        : item.finalDecision === 'send_back' ? 'Send back to DC' : '';
-                  const decision = finalDecision || (item.awaitingTeamDecision
-                    ? `Awaiting team decision · Recommendation: ${recommendation}`
-                    : item.decision === 'Undecided' ? `Recommendation: ${recommendation}` : item.decision);
-                  const until = item.finalDecision === 'defer' || item.decision === 'Defer'
-                    ? ` · until ${(item.finalDecision === 'defer' ? item.finalUntil : item.until) === 'next_dc' ? 'Next DC' : (item.finalDecision === 'defer' ? item.finalUntil : item.until) || 'unspecified'}`
+                  const decision = item.decision === 'Undecided' ? 'No decision yet' : item.decision;
+                  const until = item.decision === 'Defer'
+                    ? ` · until ${item.until === 'next_dc' ? 'Next DC' : item.until || 'unspecified'}`
                     : '';
                   return (
                     <div key={`${item.dcId}-${index}`} className="rounded bg-slate-50 p-3 text-sm">
                       <p><strong>DC {item.dcDate}:</strong> {decision}{until}</p>
-                      <p className="mt-1 text-slate-600">{finalDecision ? 'Final remarks' : 'Recommendation notes'}: {item.remarks || item.recommendationNotes || '—'}</p>
+                      <p className="mt-1 text-slate-600">Remarks: {item.remarks || '—'}</p>
                     </div>
                   );
                 }) : <p className="text-sm text-slate-600">No decision yet.</p>}
@@ -887,7 +860,7 @@ export default function HomePage() {
         <div className="sticky-filters mt-4 grid gap-3 bg-white py-2 sm:grid-cols-2 lg:grid-cols-6">
           <label className="text-sm">Member<select aria-label="Member" value={activityFilters.memberId} onChange={(event) => setActivityFilters({ ...activityFilters, memberId: event.target.value })} className="mt-1 w-full rounded border px-2 py-2"><option value="">All members</option>{members.map((member) => <option key={member.memberId} value={member.memberId}>{member.name}</option>)}</select></label>
           <label className="text-sm">Team<select aria-label="Team" value={activityFilters.team} onChange={(event) => setActivityFilters({ ...activityFilters, team: event.target.value })} className="mt-1 w-full rounded border px-2 py-2"><option value="">All teams</option><option value="placement_cell">Placement cell</option><option value="summer_internship">Summer internship</option></select></label>
-          <label className="text-sm">Event type<select aria-label="Event type" value={activityFilters.type} onChange={(event) => setActivityFilters({ ...activityFilters, type: event.target.value })} className="mt-1 w-full rounded border px-2 py-2"><option value="">All event types</option>{['logged', 'edited', 'locked', 'unlocked', 'removed', 'restored', 'dc_note', 'dc_scheduled', 'dc_unscheduled', 'dc_attendance', 'dc_decision', 'dc_recommendation', 'dc_recommendation_held', 'dc_discussion_note', 'dc_final_decision', 'dc_rescheduled', 'dc_cancelled', 'student_locked', 'student_unlocked'].map((type) => <option key={type} value={type}>{type.replaceAll('_', ' ')}</option>)}</select></label>
+          <label className="text-sm">Event type<select aria-label="Event type" value={activityFilters.type} onChange={(event) => setActivityFilters({ ...activityFilters, type: event.target.value })} className="mt-1 w-full rounded border px-2 py-2"><option value="">All event types</option>{['logged', 'edited', 'locked', 'unlocked', 'removed', 'restored', 'dc_note', 'dc_scheduled', 'dc_unscheduled', 'dc_attendance', 'dc_decision', 'dc_rescheduled', 'dc_cancelled', 'student_locked', 'student_unlocked'].map((type) => <option key={type} value={type}>{type.replaceAll('_', ' ')}</option>)}</select></label>
           <label className="text-sm">From date<input type="date" aria-label="From date" value={activityFilters.from} onChange={(event) => setActivityFilters({ ...activityFilters, from: event.target.value })} className="mt-1 w-full rounded border px-2 py-2" /></label>
           <label className="text-sm">To date<input type="date" aria-label="To date" value={activityFilters.to} onChange={(event) => setActivityFilters({ ...activityFilters, to: event.target.value })} className="mt-1 w-full rounded border px-2 py-2" /></label>
           <label className="text-sm">Roll number<input placeholder="Any roll number" value={activityFilters.rollNo} onChange={(event) => setActivityFilters({ ...activityFilters, rollNo: event.target.value })} className="mt-1 w-full rounded border px-2 py-2" /></label>

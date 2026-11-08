@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage, requestExceedsBodyLimit } from '@/lib/database-errors';
 import { MemberInput, planMemberImport, StoredMember } from '@/lib/member-import';
-import { databaseFailureMessage, getDb } from '@/lib/mongodb';
-import { readJsonBody, RequestBodyError } from '@/lib/request-body';
+import { getDb } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,7 +12,10 @@ export async function POST(request: Request) {
   try {
     const enteredByEmail = await getAuthorizedEmail();
     if (!enteredByEmail) return NextResponse.json({ message: 'Sign in with an active member account.' }, { status: 401 });
-    const payload = await readJsonBody<{ members?: MemberInput[] }>(request);
+    if (requestExceedsBodyLimit(request)) {
+      return NextResponse.json({ message: 'The member upload exceeds 4 MB. Split the file and try again.' }, { status: 413 });
+    }
+    const payload = await request.json();
     const rows: MemberInput[] = Array.isArray(payload?.members) ? payload.members : [];
     if (!rows.length || rows.length > 2000) {
       return NextResponse.json({ message: 'Preview between 1 and 2,000 member rows.' }, { status: 400 });
@@ -47,10 +50,7 @@ export async function POST(request: Request) {
       })),
     });
   } catch (error) {
-    if (error instanceof RequestBodyError) {
-      return NextResponse.json({ message: error.message }, { status: error.status });
-    }
     console.error('Unable to preview member upload.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to preview the member upload.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to preview the member upload.') }, { status: 500 });
   }
 }

@@ -39,7 +39,7 @@ export async function syncCurrentDcAutoAdd(
   const currentDc = await getCurrentDc(db, session);
 
   const activeDcs = await dcs.find(
-    { status: 'Planned' },
+    { status: { $in: ['Planned', 'In progress'] } },
     { projection: { _id: 0, id: 1, status: 1 }, session },
   ).toArray();
   const activeDcIds = activeDcs.map((dc) => dc.id);
@@ -119,7 +119,7 @@ export async function syncCurrentDcAutoAdd(
       (item: { defaultId: string }) => item.defaultId === record.id,
     )?.decision;
     const hasDecision = linkedEntry?.attendance === 'Present' && decision && decision !== 'Undecided';
-    const terminalDc = !linkedDc || linkedDc.status === 'Completed' || linkedDc.status === 'Finalised' || linkedDc.status === 'Cancelled';
+    const terminalDc = !linkedDc || linkedDc.status === 'Completed' || linkedDc.status === 'Cancelled';
     const orphanedScheduledStatus = !record.dcId && record.dcStatus === 'Scheduled';
     const clearTerminalLink = hasDcLink && terminalDc && !hasDecision;
     if (clearTerminalLink || orphanedScheduledStatus) {

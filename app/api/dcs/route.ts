@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { getCurrentDc, getIndiaDate, syncCurrentDcAutoAdd } from '@/lib/dc-auto-add';
 import { findActorMember } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -145,10 +146,10 @@ export async function GET() {
         continue;
       }
       if (record.dcStatus === 'Not scheduled' && record.deferralDueAt instanceof Date &&
-        getIndiaDate(record.deferralDueAt) === today) {
+        record.deferralDueAt.toISOString().slice(0, 10) === today) {
         dueDefaultsForResponse.push({ ...record, deferral: { ...record.deferral, byName: memberById.get(record.deferral?.by) ?? 'Unknown member' } });
       }
-      if (record.status !== 'logged' || record.dcStatus === 'Decided' || record.dcStatus === 'Scheduled' || record.dcStatus === 'Awaiting team decision') continue;
+      if (record.status !== 'logged' || record.dcStatus === 'Decided' || record.dcStatus === 'Scheduled') continue;
       const rollNoNormalized = String(record.rollNoNormalized || record.rollNo).toUpperCase();
       if (assignedStudents.has(rollNoNormalized)) continue;
       const student = studentByRollNo.get(rollNoNormalized);
@@ -186,7 +187,6 @@ export async function GET() {
       const dcStudentDefaults = defaults.filter((record) => record.dcId === dc.id);
       return {
         ...dc,
-        finalisedByName: dc.finalisedBy ? memberById.get(dc.finalisedBy) ?? '' : '',
         autoAdd: dc.autoAdd !== false,
         isCurrent: dc.id === currentDcId,
         counts: {
@@ -195,14 +195,9 @@ export async function GET() {
           attended: dcEntries.filter((entry) => entry.attendance === 'Present').length,
           absent: dcEntries.filter((entry) => entry.attendance === 'Absent').length,
           defaultsToBeRemoved: dc.status === 'Cancelled' ? 0 : dcEntries.reduce(
-            (total, entry) => total + (entry.decisions ?? []).filter((decision: { decision: string; recommendation?: string }) => (decision.recommendation ?? decision.decision) === 'remove' || decision.decision === 'Remove').length,
+            (total, entry) => total + (entry.decisions ?? []).filter((decision: { decision: string }) => decision.decision === 'Remove').length,
             0,
           ),
-          defaultsRecommendedToKeep: dc.status === 'Cancelled' ? 0 : dcEntries.reduce(
-            (total, entry) => total + (entry.decisions ?? []).filter((decision: { decision: string; recommendation?: string }) => (decision.recommendation ?? decision.decision) === 'keep' || decision.decision === 'Keep').length,
-            0,
-          ),
-          awaitingTeamDecision: dcStudentDefaults.filter((record) => record.dcStatus === 'Awaiting team decision').length,
           toDiscuss: dcStudentDefaults.filter((record) => record.dcStatus === 'To discuss').length,
           deferred: dcStudentDefaults.filter((record) => record.dcStatus === 'Deferred').length,
         },
@@ -272,7 +267,7 @@ export async function GET() {
     });
   } catch (error) {
     console.error('Unable to load DC planner data.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load DC data or sync automatic student assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load DC data or sync automatic student assignments. Try again, and contact an administrator if it continues.') }, { status: 500 });
   }
 }
 
@@ -318,10 +313,8 @@ export async function POST(request: Request) {
       cancelReason: '',
       createdBy: '',
       createdAt: now,
-      heldBy: '',
-      heldAt: null,
-      finalisedBy: '',
-      finalisedAt: null,
+      completedBy: '',
+      completedAt: null,
     };
 
     await getDb();
@@ -347,9 +340,9 @@ export async function POST(request: Request) {
     }
     console.error('Unable to plan DC.', error);
     return NextResponse.json({
-      message: databaseFailureMessage(error, requestAction === 'sync'
-        ? 'Unable to sync students automatically. Try again, and contact an administrator if it continues.'
-        : 'Unable to plan or sync the DC.'),
+      message: requestAction === 'sync'
+        ? getApiErrorMessage(error, 'Unable to sync students automatically. Try again, and contact an administrator if it continues.')
+        : getApiErrorMessage(error, 'Unable to plan or sync the DC.'),
     }, { status: 500 });
   }
 }

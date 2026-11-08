@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { isPlacementTeam } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 type RouteContext = { params: { memberId: string } };
 
@@ -126,6 +126,6 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ message: error.message }, { status: 400 });
     }
     console.error('Unable to update member.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to update the member.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to update the member.') }, { status: 500 });
   }
 }

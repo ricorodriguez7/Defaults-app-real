@@ -1,31 +1,32 @@
 # Vercel deployment
 
-The app runs as a Next.js application on Vercel; MongoDB access is performed by Node.js route handlers. It is configured for Node 22, uncached API data, restricted sign-in, and in-memory browser downloads.
+The app is a Next.js project. Its MongoDB-backed API routes run as Node.js functions; no separate backend server or scheduled job is required. Vercel functions are configured for Mumbai (`bom1`), and the upload routes have a 30-second limit.
 
 ## Before deploying
 
-1. Confirm the faculty advisor approves hosting the tracker and its data on personal Vercel and MongoDB Atlas accounts. Decide who will own and transfer those accounts after the current committee.
-2. Push the project to a private GitHub repository. `.env.local` and other `.env*` files are ignored; never commit credentials.
-3. Create a dedicated Atlas database user with read/write access only to `default_tracker`. Use a new, long random password. The URI is only used server-side.
-4. Import the repository into the Vercel Hobby project. Add these variables to the **Production** environment:
-   - `MONGODB_URI`
-   - `MONGODB_DATABASE` (`default_tracker`)
-   - `AUTH_GOOGLE_ID`
-   - `AUTH_GOOGLE_SECRET`
-   - `AUTH_SECRET` (generate a new random value)
-   - `ALLOWED_EMAIL_DOMAIN` (`lbsim.ac.in`)
-   - `INITIAL_ALLOWED_EMAILS` only if initial member seeding is needed
-5. Deploy once to obtain the production URL. Configure Google OAuth with `https://<production-host>/api/auth/callback/google` as the redirect URI and the production origin as an authorized JavaScript origin. Set `AUTH_URL` in Vercel to the production URL and redeploy. Set `AUTH_TRUST_HOST=true` only if Auth.js reports `UntrustedHost`.
-6. If available, select Vercel's Mumbai (`bom1`) function region near the Atlas cluster. Atlas may require an IP access-list entry for Vercel's changing egress addresses; use the narrowest option available and rely on the dedicated least-privilege database user. Do not reuse an Atlas administrator account.
+1. Confirm the faculty advisor approves hosting the placement tool on personal Vercel and MongoDB Atlas accounts. Vercel Hobby is intended for non-commercial, personal use; review the current [Hobby plan limits](https://vercel.com/docs/plans/hobby).
+2. Push this project to a private GitHub repository owned by an account the placement cell can transfer or hand over.
+3. In Atlas, create a dedicated database user with read/write access only to `default_tracker`. Use a long, unique password. If using Atlas Network Access with Vercel's dynamic function IPs, `0.0.0.0/0` may be required; use only the restricted database user and strong credentials.
+4. Import the private repository into Vercel. Set these **Production** environment variables in the Vercel project settings:
+   - `MONGODB_URI`: the Atlas URI for the restricted database user
+   - `MONGODB_DATABASE`: `default_tracker`
+   - `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`: the Google OAuth client credentials
+   - `AUTH_SECRET`: a newly generated random secret
+   - `AUTH_URL`: the deployed production URL, for example `https://your-app.vercel.app`
+5. In Google Cloud Console, add `https://your-app.vercel.app/api/auth/callback/google` as an authorized redirect URI and the deployed origin as an authorized JavaScript origin. Publish the OAuth consent screen if members outside the test-user list need access.
+6. Deploy, note the production URL, set `AUTH_URL` to that exact URL, and redeploy if it was not known before the first deployment.
+7. In the app, add each member with the exact Google email address they use. Only active members in this directory can sign in.
 
-Vercel Hobby is intended for non-commercial use and enforces function, payload, and bandwidth limits. This app has no scheduled-job dependency. Spreadsheet imports are limited to 4 MB per file and request, and are validated before processing. Excel exports are generated in the browser in memory; no serverless files are written. Review the current Vercel plan limits before launch.
+Do not commit `.env.local` or put credentials in the repository. `.env.local` is gitignored. The example environment file contains placeholders only. Vercel environment variable changes take effect after redeployment.
 
-## Verify after deployment
+## Operational checks
 
-- Sign in with an active `@lbsim.ac.in` member on a phone and laptop. Confirm a personal Gmail account and an institutional address absent from the active member directory are refused.
-- Check that student lookup, default logging, Excel roster/member imports, workbook export, DC Planner, After-DC Discussion, and Summary work.
-- Confirm refreshing reflects changes and opening a protected `/api/...` data route without a session returns HTTP 401.
-- Verify `MONGODB_URI` is set only in server-side Vercel environment settings, not in repository files or browser requests.
-- Export the tracker workbook weekly during the season and keep an advisor-approved backup; the free Atlas tier does not include continuous backups.
+- Sign in as an active member on both a phone and a laptop. Verify that an unlisted or inactive account is refused.
+- Log a default and confirm it appears in the app and Atlas.
+- Upload student and member spreadsheets smaller than 4 MB, and verify exports download successfully. Large exports must be filtered or split.
+- Check the DC planner, discussion workflow, and summary counts.
+- Confirm an API request without a session returns `401`, and refresh after a change to confirm fresh data.
+- Confirm `MONGODB_URI` is not present in the repository, page source, or browser requests.
+- Export the workbook regularly and keep the backup with the faculty advisor; the free Atlas tier may not provide continuous backups.
 
-Deploy changes before, not during, a DC meeting. Preview deployments have separate URLs and Google OAuth only works for configured redirect URLs; validate sign-in on production or locally.
+Keep the Vercel, GitHub, Atlas, and Google Cloud accounts and their credentials in an approved password manager. Transfer the accounts and project ownership before the current committee graduates. For a bad release, promote the last working Vercel deployment. Test changes the evening before a DC, not on the day itself.

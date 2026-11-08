@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
+import { getApiErrorMessage } from '@/lib/database-errors';
 import { syncCurrentDcAutoAdd } from '@/lib/dc-auto-add';
 import { findActiveMember, findActorMember } from '@/lib/members';
-import { databaseFailureMessage, getDb, withMongoTransaction } from '@/lib/mongodb';
+import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
 
 function normalizeRollNo(value: unknown) {
   return String(value ?? '').trim().toUpperCase();
@@ -70,7 +70,7 @@ export async function GET(request: Request) {
     return NextResponse.json(await loadDefaults(await getDb(), includeRemoved));
   } catch (error) {
     console.error('Unable to load defaults from MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to load defaults.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to load defaults.') }, { status: 500 });
   }
 }
 
@@ -165,6 +165,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ message }, { status: 400 });
     }
     console.error('Unable to save default and event to MongoDB.', error);
-    return NextResponse.json({ message: databaseFailureMessage(error, 'Unable to save the default or sync it to the current DC. Try again, and contact an administrator if it continues.') }, { status: 500 });
+    return NextResponse.json({ message: getApiErrorMessage(error, 'Unable to save the default or sync it to the current DC. Try again, and contact an administrator if it continues.') }, { status: 500 });
   }
 }
