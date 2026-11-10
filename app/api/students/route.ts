@@ -11,6 +11,18 @@ function normalizeRollNo(value: unknown) {
   return String(value ?? '').trim().toUpperCase();
 }
 
+function parseBatch(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return { valid: true as const, batch: undefined };
+  if (normalized === 'junior' || normalized === 'junior batch') return { valid: true as const, batch: 'junior' as const };
+  if (normalized === 'senior' || normalized === 'senior batch') return { valid: true as const, batch: 'senior' as const };
+  return { valid: false as const, batch: undefined };
+}
+
+function batchLabel(batch: string | undefined) {
+  return batch === 'junior' ? 'Junior batch' : batch === 'senior' ? 'Senior batch' : 'Not set';
+}
+
 export async function GET(request: Request) {
   try {
     const email = await getAuthorizedEmail();
@@ -23,16 +35,16 @@ export async function GET(request: Request) {
     if (rollNo) {
       const student = await students.findOne(
         { rollNoNormalized: normalizeRollNo(rollNo) },
-        { projection: { _id: 0, rollNo: 1, name: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
+        { projection: { _id: 0, rollNo: 1, name: 1, batch: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
       );
       return student
-        ? NextResponse.json({ found: true, student })
+        ? NextResponse.json({ found: true, student: { ...student, batchLabel: batchLabel(student.batch) } })
         : NextResponse.json({ found: false, message: 'No student found for that roll number.' });
     }
 
     const roster = await students.find(
       {},
-      { projection: { _id: 0, rollNo: 1, name: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
+      { projection: { _id: 0, rollNo: 1, name: 1, batch: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
     ).sort({ rollNo: 1 }).toArray();
     const counts = await db.collection('defaults').aggregate<{ _id: string; count: number }>([
       { $match: { status: { $ne: 'removed' } } },
@@ -41,6 +53,7 @@ export async function GET(request: Request) {
     const defaultsByRollNo = new Map(counts.map((entry) => [entry._id, entry.count]));
     return NextResponse.json(roster.map((student) => ({
       ...student,
+      batchLabel: batchLabel(student.batch),
       numberOfDefaults: defaultsByRollNo.get(normalizeRollNo(student.rollNo)) ?? student.numberOfDefaults ?? 0,
     })));
   } catch (error) {
@@ -67,20 +80,25 @@ export async function POST(request: Request) {
       rollNo: string;
       rollNoNormalized: string;
       name: string;
+      batch?: 'junior' | 'senior';
       numberOfDefaults?: number;
       lockPenaltyStatus?: string;
     }> = [];
     const seen = new Set<string>();
     const duplicates = new Set<string>();
 
-    for (const entry of roster) {
-      const rollNo = String(entry?.rollNo ?? '').trim();
+    const batchErrors: string[] = [];
+    for (const [index, entry] of roster.entries()) {
+      const rollNo = String(entry?.rollNo ?? entry?.['Roll No'] ?? entry?.['Roll Number'] ?? '').trim();
       const rollNoNormalized = normalizeRollNo(rollNo);
       const name = String(entry?.name ?? '').trim();
+      const parsedBatch = parseBatch(entry?.batch ?? entry?.Batch);
+      const sourceRow = Number.isInteger(entry?.rowNumber) && entry.rowNumber >= 2 ? entry.rowNumber : index + 2;
 
       if (!rollNoNormalized || !name) {
-        return NextResponse.json({ message: 'Each roster row requires a roll number and a name.' }, { status: 400 });
+        return NextResponse.json({ message: `Row ${sourceRow}: each roster row requires a roll number and a name.` }, { status: 400 });
       }
+      if (!parsedBatch.valid) batchErrors.push(`Row ${sourceRow}: Batch must be Junior batch or Senior batch.`);
 
       if (seen.has(rollNoNormalized)) duplicates.add(rollNoNormalized);
       seen.add(rollNoNormalized);
@@ -88,6 +106,7 @@ export async function POST(request: Request) {
         rollNo,
         rollNoNormalized,
         name,
+        ...(parsedBatch.batch ? { batch: parsedBatch.batch } : {}),
         ...(Number.isInteger(entry?.numberOfDefaults) && entry.numberOfDefaults >= 0
           ? { numberOfDefaults: entry.numberOfDefaults }
           : {}),
@@ -97,6 +116,7 @@ export async function POST(request: Request) {
       });
     }
 
+    if (batchErrors.length) return NextResponse.json({ message: batchErrors.join('\n'), errors: batchErrors }, { status: 400 });
     if (duplicates.size) {
       return NextResponse.json({ message: `Duplicate roll numbers found: ${Array.from(duplicates).join(', ')}` }, { status: 400 });
     }
@@ -112,6 +132,7 @@ export async function POST(request: Request) {
             rollNo: student.rollNo,
             rollNoNormalized: student.rollNoNormalized,
             name: student.name,
+            ...(student.batch ? { batch: student.batch } : {}),
             ...(student.numberOfDefaults !== undefined ? { numberOfDefaults: student.numberOfDefaults } : {}),
             ...(student.lockPenaltyStatus ? { lockPenaltyStatus: student.lockPenaltyStatus } : {}),
             updatedAt: now,
@@ -126,12 +147,13 @@ export async function POST(request: Request) {
       action: 'Students uploaded',
       collection: 'students',
       by: email,
-      after: { count: normalizedRoster.length },
+      category: 'members',
+      after: { count: normalizedRoster.length, batchAssignments: normalizedRoster.filter((student) => student.batch).length },
     });
 
     const updated = await students.find(
       {},
-      { projection: { _id: 0, rollNo: 1, name: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
+      { projection: { _id: 0, rollNo: 1, name: 1, batch: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
     ).sort({ rollNo: 1 }).toArray();
     return NextResponse.json({ updated });
   } catch (error) {

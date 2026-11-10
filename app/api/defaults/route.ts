@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
 import { getApiErrorMessage } from '@/lib/database-errors';
 import { syncCurrentDcAutoAdd } from '@/lib/dc-auto-add';
-import { findActiveMember, findActorMember } from '@/lib/members';
+import { findActorMember, isPlacementTeam } from '@/lib/members';
 import { getDb, withMongoTransaction } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
@@ -48,7 +48,7 @@ async function loadDefaults(db: Awaited<ReturnType<typeof getDb>>, includeRemove
       ...(discussion ? { discussion } : {}),
       ...(deferral ? { deferral } : {}),
       typeName: typeNames.get(record.typeId) ?? record.typeId,
-      dcDate: dcDateById.get(record.dcId) ?? '',
+      dcDate: dcDateById.get(record.dcId) ?? record.dcDate ?? '',
       loggedByName: loggedBy?.name ?? 'Imported',
       team: loggedBy?.team ?? 'Imported',
       updatedByName: lastUpdatedBy?.name ?? 'Imported',
@@ -86,36 +86,33 @@ export async function POST(request: Request) {
     const typeId = String(payload?.typeId ?? '').trim();
     const date = String(payload?.date ?? '').trim();
     const notes = String(payload?.notes ?? '').trim();
-    const loggedByMemberId = String(payload?.loggedByMemberId ?? '').trim();
     const eventReason = String(payload?.reason ?? '').trim();
 
     if (!rollNoNormalized) return NextResponse.json({ message: 'Roll number is required.' }, { status: 400 });
-    if (!company || !typeId || !date || !loggedByMemberId) {
-      return NextResponse.json({ message: 'Company, type, date and Logged by member are required.' }, { status: 400 });
+    if (!company || !typeId || !date) {
+      return NextResponse.json({ message: 'Company, type and date are required.' }, { status: 400 });
     }
     const parsedDate = parseDate(date);
     if (!parsedDate) return NextResponse.json({ message: 'Enter a valid date.' }, { status: 400 });
 
     const result = await withMongoTransaction(async (db, session) => {
-      const [student, defaultType, loggedBy, actor] = await Promise.all([
+      const [student, defaultType, actor] = await Promise.all([
         db.collection('students').findOne({ rollNoNormalized }, { session }),
         db.collection('default_types').findOne({ id: typeId, active: true }, { session }),
-        findActiveMember(db, loggedByMemberId),
         findActorMember(db, enteredByEmail),
       ]);
 
       if (!student) throw new Error('Unknown roll number. Please use a valid student roll number.');
       if (!defaultType) throw new Error('Select an active default type.');
-      if (!loggedBy) throw new Error('Choose an active placement or summer internship member.');
-      if (!actor) throw new Error('Your account must be in the active member directory to log defaults.');
+      if (!actor || !isPlacementTeam(actor.team)) throw new Error('Your account must be an active placement or summer internship member to log defaults.');
 
       const now = new Date();
       const record = {
         id: randomUUID(),
         rollNo: student.rollNo,
         rollNoNormalized,
-        memberId: loggedBy.memberId,
-        loggedByMemberId: loggedBy.memberId,
+        memberId: actor.memberId,
+        loggedByMemberId: actor.memberId,
         enteredByEmail,
         typeId,
         company,
@@ -125,6 +122,7 @@ export async function POST(request: Request) {
         dcId: null,
         dcStatus: 'Not scheduled',
         notes,
+        source: 'manual',
         createdAt: now,
         updatedAt: now,
         updatedByMemberId: actor.memberId,
@@ -134,7 +132,7 @@ export async function POST(request: Request) {
         defaultId: record.id,
         rollNo: record.rollNo,
         type: 'logged',
-        memberId: loggedBy.memberId,
+        memberId: actor.memberId,
         enteredByEmail,
         at: now,
         reason: eventReason,
@@ -159,7 +157,6 @@ export async function POST(request: Request) {
     if (
       message.startsWith('Unknown roll number') ||
       message.startsWith('Select an active') ||
-      message.startsWith('Choose an active') ||
       message.startsWith('Your account')
     ) {
       return NextResponse.json({ message }, { status: 400 });

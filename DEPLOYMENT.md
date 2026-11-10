@@ -13,6 +13,7 @@ The app is a Next.js project. Its MongoDB-backed API routes run as Node.js funct
    - `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`: the Google OAuth client credentials
    - `AUTH_SECRET`: a newly generated random secret
    - `AUTH_URL`: the deployed production URL, for example `https://your-app.vercel.app`
+   - `ALLOW_DATA_RESET`: keep unset or set to `false` for real use. Set to `true` only in a testing deployment that needs the data-management reset screen; redeploy after changing it.
 5. In Google Cloud Console, add `https://your-app.vercel.app/api/auth/callback/google` as an authorized redirect URI and the deployed origin as an authorized JavaScript origin. Publish the OAuth consent screen if members outside the test-user list need access.
 6. Deploy, note the production URL, set `AUTH_URL` to that exact URL, and redeploy if it was not known before the first deployment.
 7. In the app, add each member with the exact Google email address they use. Only active members in this directory can sign in.
@@ -28,5 +29,7 @@ Do not commit `.env.local` or put credentials in the repository. `.env.local` is
 - Confirm an API request without a session returns `401`, and refresh after a change to confirm fresh data.
 - Confirm `MONGODB_URI` is not present in the repository, page source, or browser requests.
 - Export the workbook regularly and keep the backup with the faculty advisor; the free Atlas tier may not provide continuous backups.
+- Defaults can be imported from the Defaults view using the sample Excel workbook. Imports are limited to 3,000 rows and under 4 MB; check Import history for eligible undo actions.
+- For testing only, set `ALLOW_DATA_RESET=true` in the deployment environment to reveal Settings → Data management. The reset requires exporting a full workbook backup and typing `RESET`. Remove the variable or set it to `false` before real use.
 
 Keep the Vercel, GitHub, Atlas, and Google Cloud accounts and their credentials in an approved password manager. Transfer the accounts and project ownership before the current committee graduates. For a bad release, promote the last working Vercel deployment. Test changes the evening before a DC, not on the day itself.

@@ -64,15 +64,17 @@ export async function GET(_request: Request, { params }: RouteContext) {
     ]);
     const rollNos = entries.map((entry) => entry.rollNo);
     const students = await db.collection('students').find({ rollNo: { $in: rollNos } })
-      .project({ _id: 0, rollNo: 1, name: 1 }).toArray();
+      .project({ _id: 0, rollNo: 1, name: 1, batch: 1 }).toArray();
     const defaultIds = Array.from(new Set(entries.flatMap((entry) => (entry.decisions ?? []).map((item: Decision) => item.defaultId))));
     const defaults = await db.collection('defaults').find({ id: { $in: defaultIds } }, { projection: { _id: 0, rollNoNormalized: 0 } }).toArray();
     const studentNames = new Map(students.map((student) => [student.rollNo.toUpperCase(), student.name]));
+    const studentBatches = new Map(students.map((student) => [student.rollNo.toUpperCase(), student.batch]));
     const defaultById = new Map(defaults.map((record) => [record.id, record]));
     const typeNames = new Map(types.map((type) => [type.id, type.name]));
     const decoratedEntries = entries.map((entry) => ({
       ...entry,
       studentName: studentNames.get(String(entry.rollNo).toUpperCase()) ?? entry.rollNo,
+      batch: studentBatches.get(String(entry.rollNo).toUpperCase()),
       defaults: (entry.decisions ?? []).map((item: Decision) => {
         const record = defaultById.get(item.defaultId);
         return record ? {

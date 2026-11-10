@@ -25,6 +25,7 @@ type PendingDefault = {
   id: string;
   rollNo: string;
   name: string;
+  batch?: 'junior' | 'senior';
   company: string;
   typeName: string;
   date: string;
@@ -36,6 +37,7 @@ type PendingDefault = {
 type PendingStudent = {
   rollNo: string;
   name: string;
+  batch?: 'junior' | 'senior';
   defaultCount: number;
   daysWaiting: number;
   defaults: PendingDefault[];
@@ -56,6 +58,7 @@ type DCDefault = {
 type DCEntry = {
   rollNo: string;
   studentName: string;
+  batch?: 'junior' | 'senior';
   attendance: Attendance;
   absentReason: string;
   remarks: string;
@@ -63,7 +66,7 @@ type DCEntry = {
 };
 
 type DCDetail = { dc: DCRecord; entries: DCEntry[] };
-type RosterStudent = { rollNo: string; name: string };
+type RosterStudent = { rollNo: string; name: string; batch?: 'junior' | 'senior' };
 
 const fieldClass = 'mt-1 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm';
 const buttonClass = 'inline-flex min-h-11 items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2';
@@ -105,10 +108,12 @@ export default function DCTab({
   const [dueDefaults, setDueDefaults] = useState<PendingDefault[]>([]);
   const [pendingCounts, setPendingCounts] = useState({ ready: 0, toDiscuss: 0, deferred: 0, due: 0 });
   const [pendingFilter, setPendingFilter] = useState<'ready' | 'discussion' | 'deferred' | 'due'>('ready');
+  const [pendingBatchFilter, setPendingBatchFilter] = useState('');
   const [detail, setDetail] = useState<DCDetail | null>(null);
   const [studentSearch, setStudentSearch] = useState('');
   const [lookupResult, setLookupResult] = useState<{ query: string; kind: 'outside' | 'missing'; student?: RosterStudent } | null>(null);
   const [attendanceFilter, setAttendanceFilter] = useState<'all' | Attendance>('all');
+  const [attendanceBatchFilter, setAttendanceBatchFilter] = useState('');
   const [expandedRollNo, setExpandedRollNo] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedRollNos, setSelectedRollNos] = useState<string[]>([]);
@@ -198,6 +203,9 @@ export default function DCTab({
       : pendingFilter === 'deferred'
         ? deferredDefaults
         : dueDefaults;
+  const visiblePendingRows = pendingRows.filter((item) =>
+    !pendingBatchFilter || (pendingBatchFilter === 'not_set' ? !item.batch : item.batch === pendingBatchFilter),
+  );
   const attendanceComplete = Boolean(detail?.entries.length) && detail?.entries.every((entry) => entry.attendance !== 'Pending');
   const attendanceCounts = useMemo(() => ({
     total: detail?.entries.length ?? 0,
@@ -213,13 +221,17 @@ export default function DCTab({
     const query = normalizeLookup(studentSearch);
     const nameQuery = normalizeName(studentSearch);
     return detail.entries.filter((entry) => {
-      const attendanceMatches = attendanceFilter === 'all' || entry.attendance === attendanceFilter;
+      const attendanceMatches = (attendanceFilter === 'all' || entry.attendance === attendanceFilter) &&
+        (!attendanceBatchFilter || (attendanceBatchFilter === 'not_set' ? !entry.batch : entry.batch === attendanceBatchFilter));
       const searchMatches = !query ||
         normalizeLookup(entry.rollNo).includes(query) ||
         normalizeName(entry.studentName).includes(nameQuery);
       return attendanceMatches && searchMatches;
     });
-  }, [detail, studentSearch, attendanceFilter]);
+  }, [detail, studentSearch, attendanceFilter, attendanceBatchFilter]);
+  const visiblePendingStudents = useMemo(() => pendingStudents.filter((student) =>
+    !pendingBatchFilter || (pendingBatchFilter === 'not_set' ? !student.batch : student.batch === pendingBatchFilter),
+  ), [pendingStudents, pendingBatchFilter]);
   const completionSummary = useMemo(() => {
     if (!detail) return null;
     const presentEntries = detail.entries.filter((entry) => entry.attendance === 'Present');
@@ -520,6 +532,7 @@ export default function DCTab({
           'DC status': item.dc.status,
           'Roll number': entry.rollNo,
           Name: entry.studentName,
+          Batch: entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set',
           Attendance: entry.attendance,
           'Absent reason': entry.absentReason,
           'Number of defaults': entry.defaults.length,
@@ -531,15 +544,35 @@ export default function DCTab({
           Remarks: entry.remarks,
         }));
       }));
-      const summaries = details.map((item: DCDetail) => ({
-        'DC date': item.dc.date,
-        'DC status': item.dc.status,
-        Called: item.entries.length,
-        Present: item.entries.filter((entry) => entry.attendance === 'Present').length,
-        Absent: item.entries.filter((entry) => entry.attendance === 'Absent').length,
-        Pending: item.entries.filter((entry) => entry.attendance === 'Pending').length,
-        'Absent roll numbers': item.entries.filter((entry) => entry.attendance === 'Absent').map((entry) => entry.rollNo).join(', '),
-      }));
+      const summaries = details.map((item: DCDetail) => {
+        const batchEntries = (batch: string) => item.entries.filter((entry) =>
+          batch === 'not_set' ? !entry.batch : entry.batch === batch,
+        );
+        const batchCounts = (batch: string, label: string) => {
+          const entries = batchEntries(batch);
+          const defaults = entries.flatMap((entry) => entry.defaults);
+          return {
+            [`${label} called`]: entries.length,
+            [`${label} present`]: entries.filter((entry) => entry.attendance === 'Present').length,
+            [`${label} absent`]: entries.filter((entry) => entry.attendance === 'Absent').length,
+            [`${label} pending`]: entries.filter((entry) => entry.attendance === 'Pending').length,
+            [`${label} remove decisions`]: defaults.filter((record) => record.decision === 'Remove').length,
+            [`${label} keep decisions`]: defaults.filter((record) => record.decision === 'Keep').length,
+          };
+        };
+        return {
+          'DC date': item.dc.date,
+          'DC status': item.dc.status,
+          Called: item.entries.length,
+          Present: item.entries.filter((entry) => entry.attendance === 'Present').length,
+          Absent: item.entries.filter((entry) => entry.attendance === 'Absent').length,
+          Pending: item.entries.filter((entry) => entry.attendance === 'Pending').length,
+          'Absent roll numbers': item.entries.filter((entry) => entry.attendance === 'Absent').map((entry) => entry.rollNo).join(', '),
+          ...batchCounts('junior', 'Junior'),
+          ...batchCounts('senior', 'Senior'),
+          ...batchCounts('not_set', 'Not set'),
+        };
+      });
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'DC meetings');
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaries), 'Attendance summary');
@@ -699,6 +732,7 @@ export default function DCTab({
             ['due', `Due now (${pendingCounts.due})`],
           ] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={pendingFilter === key} className={`${buttonClass} ${pendingFilter === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPendingFilter(key)}>{label}</button>)}
         </div>
+        <label className="mt-3 block max-w-xs text-sm">Filter by batch<select value={pendingBatchFilter} onChange={(event) => setPendingBatchFilter(event.target.value)} className={fieldClass}><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
 
         {showPlanForm && <form onSubmit={createDc} className="mt-5 grid gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 sm:grid-cols-2">
           <label className="text-sm font-medium">Date *<input required type="date" value={plan.date} onChange={(event) => setPlan({ ...plan, date: event.target.value })} className={fieldClass} /></label>
@@ -708,7 +742,7 @@ export default function DCTab({
           <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className={`${buttonClass} btn-primary`}>Save DC</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => setShowPlanForm(false)}>Cancel</button></div>
         </form>}
 
-        {pendingFilter === 'ready' && pendingCount > 0 ? <div className="mt-5 space-y-3">
+        {pendingFilter === 'ready' && pendingCount > 0 && visiblePendingStudents.length > 0 ? <div className="mt-5 space-y-3">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
             <label className="text-sm font-medium">Planned DC<select value={targetDc} onChange={(event) => setTargetDc(event.target.value)} className={fieldClass}>
               <option value="">Select a planned DC</option>{dcs.filter((dc) => dc.status === 'Planned').map((dc) => <option key={dc.id} value={dc.id}>{dc.date}{dc.time ? ` · ${dc.time}` : ''}{dc.venue ? ` · ${dc.venue}` : ''}</option>)}
@@ -716,10 +750,10 @@ export default function DCTab({
             <button type="button" disabled={!targetDc || !selectedRollNos.length || busy} className={`${buttonClass} btn-primary self-end`} onClick={() => void addSelectedStudents()}>Add selected to DC ({selectedRollNos.length})</button>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {pendingStudents.map((student) => <article key={student.rollNo} className="rounded-xl border border-slate-200 p-3 hover:border-indigo-300">
+            {visiblePendingStudents.map((student) => <article key={student.rollNo} className="rounded-xl border border-slate-200 p-3 hover:border-indigo-300">
               <label className="flex min-h-11 items-start gap-3">
                 <input aria-label={`Select ${student.name}`} type="checkbox" checked={selectedRollNos.includes(student.rollNo)} onChange={(event) => setSelectedRollNos((current) => event.target.checked ? [...current, student.rollNo] : current.filter((rollNo) => rollNo !== student.rollNo))} className="mt-1 h-5 w-5" />
-                <span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><strong className="truncate">{student.name}</strong><span className={statusStyle('Pending')}>Ready</span></span><span className="text-xs text-slate-500">{student.rollNo} · {student.defaultCount} ready defaults · {student.daysWaiting} days waiting</span></span>
+                <span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><strong className="truncate">{student.name}</strong><span className={statusStyle('Pending')}>Ready</span></span><span className="text-xs text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'} · {student.defaultCount} ready defaults · {student.daysWaiting} days waiting</span></span>
               </label>
               <div className="mt-3 space-y-2 border-t pt-2">{student.defaults.map((record) => <div key={record.id} className="rounded-lg bg-slate-50 p-2 text-sm">
                 <p className="font-medium">{record.company} · {record.typeName}</p>
@@ -727,12 +761,14 @@ export default function DCTab({
               </div>)}</div>
             </article>)}
           </div>
-        </div> : pendingFilter === 'ready'
+        </div> : pendingFilter === 'ready' && pendingCount === 0
           ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No defaults are ready for a DC.</p>
-          : pendingRows.length === 0
+          : pendingFilter === 'ready' && pendingCount > 0
+            ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No students match this batch filter.</p>
+            : visiblePendingRows.length === 0
             ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No defaults in this category.</p>
-            : <div className="mt-5 space-y-3">{(pendingRows as PendingDefault[]).map((record) => <article key={record.id} className="rounded-xl border border-slate-200 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{record.name} · {record.rollNo}</h3><p className="text-sm text-slate-600">{record.company} · {record.typeName}</p></div><span className={statusStyle(pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Pending')}>{pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Due now'}</span></div>
+            : <div className="mt-5 space-y-3">{(visiblePendingRows as PendingDefault[]).map((record) => <article key={record.id} className="rounded-xl border border-slate-200 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{record.name} · {record.rollNo}</h3><p className="text-sm text-slate-600">{record.batch ? `${record.batch === 'junior' ? 'Junior' : 'Senior'} batch · ` : 'Batch not set · '}{record.company} · {record.typeName}</p></div><span className={statusStyle(pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Pending')}>{pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Due now'}</span></div>
               {pendingFilter === 'discussion' && <div className="mt-3 space-y-2">
                 <p className="text-sm"><strong>Reason:</strong> {record.discussion?.reason || '—'}{record.discussion?.discussionDate ? ` · Discussion date ${record.discussion.discussionDate}` : ''}</p>
                 {(record.discussion?.notes ?? []).map((note, index) => <p key={`${record.id}-note-${index}`} className="rounded bg-slate-50 p-2 text-sm">{note.text} <span className="text-xs text-slate-500">— {note.byName}</span></p>)}
@@ -813,6 +849,7 @@ export default function DCTab({
             ] as const).map(([filter, label]) => <button key={filter} type="button" aria-pressed={attendanceFilter === filter} className={`${buttonClass} ${attendanceFilter === filter ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setAttendanceFilter(filter)}>{label}</button>)}
             <span className="self-center text-sm text-slate-600">{filteredEntries.length} of {attendanceCounts.total} students</span>
           </div>
+          <label className="mt-3 block max-w-xs text-sm">Filter by batch<select value={attendanceBatchFilter} onChange={(event) => setAttendanceBatchFilter(event.target.value)} className={fieldClass}><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
           {attendanceNearlyComplete && (detail.dc.status === 'Planned' || detail.dc.status === 'In progress') &&
             <button type="button" className={`${buttonClass} btn-danger mt-3`} disabled={busy} onClick={() => void markPendingAbsent()}>
               Mark all {attendanceCounts.pending} pending as absent
@@ -840,7 +877,7 @@ export default function DCTab({
         <div className="mt-5 space-y-3">
           {filteredEntries.map((entry) => <article key={entry.rollNo} className="rounded-xl border border-slate-200 bg-white">
             <button type="button" aria-expanded={expandedRollNo === entry.rollNo} className="flex min-h-14 w-full flex-wrap items-center justify-between gap-3 p-4 text-left hover:bg-slate-50" onClick={() => setExpandedRollNo((current) => current === entry.rollNo ? '' : entry.rollNo)}>
-              <span><strong>{entry.studentName}</strong><span className="ml-2 text-sm text-slate-500">{entry.rollNo} · {entry.defaults.length} defaults</span></span>
+              <span><strong>{entry.studentName}</strong><span className="ml-2 text-sm text-slate-500">{entry.rollNo} · {entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'} · {entry.defaults.length} defaults</span></span>
               <span className="flex items-center gap-2"><span className={statusStyle(entry.attendance)}>{entry.attendance}</span><span aria-hidden="true">{expandedRollNo === entry.rollNo ? '−' : '+'}</span></span>
             </button>
             {expandedRollNo === entry.rollNo && <div className="border-t border-slate-200 p-4">

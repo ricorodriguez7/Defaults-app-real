@@ -95,6 +95,50 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (!enteredByEmail) return NextResponse.json({ message: 'Sign in with an authorized account.' }, { status: 401 });
     const payload = await request.json();
     const action = String(payload?.action ?? '');
+    if (action === 'set_batch') {
+      const batchInput = String(payload?.batch ?? '').trim().toLowerCase();
+      const batch = batchInput === 'junior' || batchInput === 'junior batch'
+        ? 'junior'
+        : batchInput === 'senior' || batchInput === 'senior batch'
+          ? 'senior'
+          : batchInput === '' ? '' : null;
+      if (batch === null) return NextResponse.json({ message: 'Choose Junior batch, Senior batch, or Not set.' }, { status: 400 });
+      await withMongoTransaction(async (db, session) => {
+        const rollNoNormalized = normalizeRollNo(params.rollNo);
+        const student = await db.collection('students').findOne({ rollNoNormalized }, { session });
+        if (!student) throw new Error('NOT_FOUND');
+        const actor = await findActorMember(db, enteredByEmail);
+        if (!actor) throw new Error('Your account must be in the active member directory.');
+        const now = new Date();
+        await db.collection('students').updateOne(
+          { _id: student._id },
+          { $set: { batch, batchUpdatedAt: now, batchUpdatedByMemberId: actor.memberId } },
+          { session },
+        );
+        if ((student.batch ?? '') !== batch) {
+          await db.collection('default_events').insertOne({
+            eventId: randomUUID(),
+            defaultId: null,
+            rollNo: student.rollNo,
+            type: 'student_batch_updated',
+            memberId: actor.memberId,
+            enteredByEmail,
+            at: now,
+            reason: '',
+            note: '',
+            dcReference: '',
+            changes: { batch: { from: student.batch || 'Not set', to: batch || 'Not set' } },
+          }, { session });
+        }
+        await db.collection('audit_log').insertOne({
+          action: 'Student batch updated', collection: 'students', by: enteredByEmail, at: now,
+          category: 'members', actor: actor.memberId,
+          before: { rollNo: student.rollNo, batch: student.batch ?? '' },
+          after: { rollNo: student.rollNo, batch: batch || 'Not set' },
+        }, { session });
+      });
+      return NextResponse.json({ updated: true, batch });
+    }
     const reason = String(payload?.reason ?? '').trim();
     if (action !== 'lock' && action !== 'unlock') {
       return NextResponse.json({ message: 'Choose lock or unlock.' }, { status: 400 });

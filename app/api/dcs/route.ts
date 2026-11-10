@@ -95,7 +95,7 @@ export async function GET() {
       db.collection('dcs').find({}, { projection: { _id: 0 } }).sort({ date: -1, createdAt: -1 }).toArray(),
       db.collection('dc_entries').find({ removed: { $ne: true } }, { projection: { _id: 0 } }).toArray(),
       db.collection('defaults').find({ status: { $ne: 'removed' } }, { projection: { _id: 0 } }).toArray(),
-      db.collection('students').find({}, { projection: { _id: 0, rollNo: 1, rollNoNormalized: 1, name: 1 } }).toArray(),
+      db.collection('students').find({}, { projection: { _id: 0, rollNo: 1, rollNoNormalized: 1, name: 1, batch: 1 } }).toArray(),
       db.collection('members').find({}, { projection: { _id: 0, memberId: 1, name: 1 } }).toArray(),
       db.collection('default_types').find({}, { projection: { _id: 0, id: 1, name: 1 } }).toArray(),
     ]);
@@ -112,7 +112,7 @@ export async function GET() {
       if (entry.openStudentRollNo) assignedStudents.add(entry.openStudentRollNo);
     }
 
-    const pendingByStudent = new Map<string, { rollNo: string; name: string; defaults: typeof defaults; oldestDate: string }>();
+    const pendingByStudent = new Map<string, { rollNo: string; name: string; batch?: string; defaults: typeof defaults; oldestDate: string }>();
     const discussionDefaults: typeof defaults = [];
     const deferredDefaults: typeof defaults = [];
     const dueDefaultsForResponse: typeof defaults = [];
@@ -156,6 +156,7 @@ export async function GET() {
       const current = pendingByStudent.get(rollNoNormalized) ?? {
         rollNo: record.rollNo,
         name: student?.name ?? record.rollNo,
+        batch: student?.batch,
         defaults: [] as typeof defaults,
         oldestDate: record.date || '',
       };
@@ -176,6 +177,7 @@ export async function GET() {
           rollNo: item.rollNo,
           rollNoNormalized,
           name: item.name,
+          batch: item.batch,
           defaultCount: item.defaults.length,
           daysWaiting,
         };
@@ -201,6 +203,26 @@ export async function GET() {
           toDiscuss: dcStudentDefaults.filter((record) => record.dcStatus === 'To discuss').length,
           deferred: dcStudentDefaults.filter((record) => record.dcStatus === 'Deferred').length,
         },
+        batchBreakdown: ['junior', 'senior', 'not_set'].map((batch) => {
+          const batchEntries = dcEntries.filter((entry) => {
+            const student = studentByRollNo.get(String(entry.rollNo).toUpperCase());
+            return batch === 'not_set' ? !student?.batch : student?.batch === batch;
+          });
+          return {
+            batch,
+            called: batchEntries.length,
+            present: batchEntries.filter((entry) => entry.attendance === 'Present').length,
+            absent: batchEntries.filter((entry) => entry.attendance === 'Absent').length,
+            pending: batchEntries.filter((entry) => entry.attendance === 'Pending').length,
+            decisions: batchEntries.reduce((result, entry) => {
+              for (const decision of entry.decisions ?? []) {
+                const key = String(decision.decision || 'Undecided');
+                result[key] = (result[key] ?? 0) + 1;
+              }
+              return result;
+            }, {} as Record<string, number>),
+          };
+        }),
       };
     });
 
@@ -208,6 +230,7 @@ export async function GET() {
       id: record.id,
       rollNo: record.rollNo,
       name: studentByRollNo.get(String(record.rollNoNormalized || record.rollNo).toUpperCase())?.name ?? record.rollNo,
+      batch: studentByRollNo.get(String(record.rollNoNormalized || record.rollNo).toUpperCase())?.batch,
       company: record.company,
       typeName: typeNameById.get(record.typeId) ?? record.typeId,
       date: record.date,

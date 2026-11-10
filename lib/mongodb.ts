@@ -5,9 +5,9 @@ const uri = process.env.MONGODB_URI;
 const databaseName = process.env.MONGODB_DATABASE || 'default_tracker';
 
 const defaultTypeSeeds = [
-  { id: 't1', name: 'Interview no-show', description: 'Did not attend a scheduled interview.', appliesTo: 'all_companies', active: true },
-  { id: 't2', name: 'Late withdrawal', description: 'Withdrew after application deadline.', appliesTo: 'all_companies', active: true },
-  { id: 't3', name: 'Test absence', description: 'Absent from a company assessment.', appliesTo: 'all_companies', active: true },
+  { id: 't1', name: 'Interview no-show', nameNormalized: 'interview no-show', description: 'Did not attend a scheduled interview.', appliesTo: 'all_companies', active: true },
+  { id: 't2', name: 'Late withdrawal', nameNormalized: 'late withdrawal', description: 'Withdrew after application deadline.', appliesTo: 'all_companies', active: true },
+  { id: 't3', name: 'Test absence', nameNormalized: 'test absence', description: 'Absent from a company assessment.', appliesTo: 'all_companies', active: true },
 ];
 
 type MongoGlobal = typeof globalThis & {
@@ -16,6 +16,10 @@ type MongoGlobal = typeof globalThis & {
 };
 
 const globalState = globalThis as MongoGlobal;
+
+export function normalizeDefaultTypeName(value: unknown) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
 
 function getClientPromise() {
   if (!uri) {
@@ -39,9 +43,12 @@ function getClientPromise() {
 }
 
 async function setupDatabase(db: Db) {
+  const defaultTypesCollectionExists = await db.listCollections({ name: 'default_types' }, { nameOnly: true }).hasNext();
   await Promise.all([
     db.collection('students').createIndex({ rollNoNormalized: 1 }, { unique: true }),
+    db.collection('students').createIndex({ batch: 1 }),
     db.collection('defaults').createIndex({ id: 1 }, { unique: true }),
+    db.collection('defaults').createIndex({ source: 1, id: 1 }),
     db.collection('defaults').createIndex({ rollNoNormalized: 1, date: -1 }),
     db.collection('default_types').createIndex({ id: 1 }, { unique: true }),
     db.collection('audit_log').createIndex({ at: -1 }),
@@ -55,15 +62,47 @@ async function setupDatabase(db: Db) {
       { openStudentRollNo: 1 },
       { unique: true, partialFilterExpression: { openStudentRollNo: { $type: 'string' } } },
     ),
+    db.collection('defaults').createIndex({ importBatchId: 1 }),
+    db.collection('import_batches').createIndex(
+      { batchId: 1 },
+      { unique: true, partialFilterExpression: { batchId: { $type: 'string' } } },
+    ),
+    db.collection('import_batches').createIndex({ importedAt: -1 }),
   ]);
 
-  await db.collection('default_types').bulkWrite(defaultTypeSeeds.map((type) => ({
-    updateOne: {
-      filter: { id: type.id },
-      update: { $setOnInsert: type },
-      upsert: true,
-    },
-  })));
+  const defaultTypes = db.collection('default_types');
+  if (defaultTypesCollectionExists) {
+    const storedTypes = await defaultTypes.find({}).toArray();
+    const idsByNormalizedName = new Map<string, string[]>();
+    for (const type of storedTypes) {
+      const normalized = normalizeDefaultTypeName(type.name);
+      if (!normalized) continue;
+      idsByNormalizedName.set(normalized, [...(idsByNormalizedName.get(normalized) ?? []), String(type.id ?? type._id)]);
+    }
+    const duplicates = Array.from(idsByNormalizedName.entries()).filter(([, ids]) => ids.length > 1);
+    if (duplicates.length) {
+      throw new Error(`Cannot initialize default types because normalized names are duplicated: ${duplicates.map(([name, ids]) => `"${name}" (${ids.join(', ')})`).join('; ')}. Rename duplicates in MongoDB, then restart the app.`);
+    }
+    for (const type of storedTypes) {
+      const name = String(type.name ?? '').trim().replace(/\s+/g, ' ');
+      if (!name) continue;
+      await defaultTypes.updateOne(
+        { _id: type._id },
+        { $set: { name, nameNormalized: normalizeDefaultTypeName(name), appliesTo: type.appliesTo || 'all_companies', active: type.active !== false } },
+      );
+    }
+  }
+  await defaultTypes.createIndex({ nameNormalized: 1 }, { unique: true, sparse: true });
+
+  if (await defaultTypes.countDocuments() === 0) {
+    await db.collection('default_types').bulkWrite(defaultTypeSeeds.map((type) => ({
+      updateOne: {
+        filter: { id: type.id },
+        update: { $setOnInsert: type },
+        upsert: true,
+      },
+    })));
+  }
 
   const members = db.collection('members');
   const memberCollectionExists = await db.listCollections({ name: 'members' }, { nameOnly: true }).hasNext();
@@ -156,6 +195,10 @@ async function setupDatabase(db: Db) {
   await db.collection('defaults').updateMany(
     { dcStatus: { $exists: false } },
     { $set: { dcStatus: 'Not scheduled', dcId: null } },
+  );
+  await db.collection('defaults').updateMany(
+    { source: { $exists: false } },
+    { $set: { source: 'manual' } },
   );
 
   if (hasLegacyAllowlist) {
@@ -323,6 +366,8 @@ export async function writeAuditEntry(entry: {
   action: string;
   collection: string;
   by: string;
+  category?: string;
+  actor?: string;
   before?: unknown;
   after?: unknown;
 }) {

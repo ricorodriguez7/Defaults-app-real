@@ -25,6 +25,7 @@ type DcOverview = {
 type Entry = {
   rollNo: string;
   studentName: string;
+  batch?: 'junior' | 'senior';
   attendance: 'Pending' | 'Present' | 'Absent';
   absentReason: string;
   remarks: string;
@@ -130,6 +131,29 @@ export default function DCSummaryTab() {
       undecided: defaultRows.filter((item) => item.decision === 'Undecided').length,
     };
   }, [detail]);
+  const batchSummary = useMemo(() => {
+    const groups = [
+      { key: 'junior', label: 'Junior batch' },
+      { key: 'senior', label: 'Senior batch' },
+      { key: 'not_set', label: 'Not set' },
+    ];
+    return groups.map((group) => {
+      const entries = (detail?.entries ?? []).filter((entry) =>
+        group.key === 'not_set' ? !entry.batch : entry.batch === group.key,
+      );
+      const defaults = entries.flatMap((entry) => entry.defaults ?? []);
+      return {
+        ...group,
+        called: entries.length,
+        present: entries.filter((entry) => entry.attendance === 'Present').length,
+        absent: entries.filter((entry) => entry.attendance === 'Absent').length,
+        pending: entries.filter((entry) => entry.attendance === 'Pending').length,
+        removed: defaults.filter((item) => item.decision === 'Remove').length,
+        kept: defaults.filter((item) => item.decision === 'Keep').length,
+        undecided: defaults.filter((item) => item.decision === 'Undecided').length,
+      };
+    });
+  }, [detail]);
 
   const absentees = detail?.entries.filter((entry) => entry.attendance === 'Absent') ?? [];
   const decisionRows = useMemo(() => {
@@ -185,6 +209,14 @@ export default function DCSummaryTab() {
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Disciplinary Committee</p>
             <h2 className="mt-2 text-2xl font-bold text-slate-900">Summary</h2>
           </div>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">Batch breakdown</h3>
+            <div className="responsive-table mt-3"><table className="min-w-full text-left text-sm">
+              <thead className="border-b bg-slate-50 text-slate-600"><tr>{['Batch', 'Called', 'Present', 'Absent', 'Pending', 'Remove decisions', 'Keep decisions', 'Undecided'].map((label) => <th key={label} className="px-3 py-2">{label}</th>)}</tr></thead>
+              <tbody>{batchSummary.map((row) => <tr key={row.key} className="border-b"><td className="px-3 py-2">{row.label}</td><td className="px-3 py-2">{row.called}</td><td className="px-3 py-2">{row.present}</td><td className="px-3 py-2">{row.absent}</td><td className="px-3 py-2">{row.pending}</td><td className="px-3 py-2">{row.removed}</td><td className="px-3 py-2">{row.kept}</td><td className="px-3 py-2">{row.undecided}</td></tr>)}</tbody>
+            </table></div>
+          </section>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <label className="text-sm text-slate-700">DC
               <select value={selectedDcId} onChange={(event) => setSelectedDcId(event.target.value)} className="mt-1 min-h-11 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
@@ -229,7 +261,7 @@ export default function DCSummaryTab() {
               <div className="mt-4 space-y-2">
                 {absentees.length ? absentees.map((entry) => (
                   <div key={entry.rollNo} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-                    <span><strong>{entry.rollNo}</strong> · {entry.studentName}</span>
+                    <span><strong>{entry.rollNo}</strong> · {entry.studentName} · {entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</span>
                     <span className="text-slate-600">{entry.absentReason || 'No reason'}</span>
                   </div>
                 )) : <p className="text-sm text-slate-500">No absentees recorded for this DC.</p>}
