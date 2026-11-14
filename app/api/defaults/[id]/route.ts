@@ -311,6 +311,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         nextStatus = 'logged';
         update.status = nextStatus;
         update.restoredAt = now;
+        update.removeReason = '';
+        update.removedInDcId = null;
+        update.removedAt = null;
       } else {
         if (record.status === 'locked') throw new Error('Unlock this default before editing it.');
         if (record.status === 'removed') throw new Error('Restore this default before editing it.');
@@ -410,9 +413,17 @@ export async function DELETE(request: Request, { params }: RouteContext) {
       const actor = await findActorMember(db, enteredByEmail);
       if (!actor) throw new Error('Your account must be in the active member directory to remove defaults.');
       const now = new Date();
+      const dc = await db.collection('dcs').findOne(
+        { $or: [{ id: dcReference }, { date: dcReference }] },
+        { session, projection: { _id: 0, id: 1 } },
+      );
       await db.collection('defaults').updateOne(
         { id: params.id },
-        { $set: { status: 'removed', dcReference, removedAt: now, updatedAt: now, updatedByMemberId: actor.memberId } },
+        { $set: {
+          status: 'removed', dcReference, removedAt: now, removeReason: reason,
+          ...(dc ? { removedInDcId: dc.id } : {}),
+          updatedAt: now, updatedByMemberId: actor.memberId,
+        } },
         { session },
       );
       await db.collection('default_events').insertOne({

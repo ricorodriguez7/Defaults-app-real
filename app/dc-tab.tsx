@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { downloadWorkbook } from '@/lib/excel-download';
 
@@ -41,6 +41,16 @@ type PendingStudent = {
   defaultCount: number;
   daysWaiting: number;
   defaults: PendingDefault[];
+};
+
+type PendingPlannerRow = {
+  rollNo: string;
+  name: string;
+  batch?: 'junior' | 'senior';
+  defaults: PendingDefault[];
+  defaultCount: number;
+  daysWaiting: number;
+  status: 'Ready' | 'To discuss' | 'Deferred' | 'Due now';
 };
 
 type DCDefault = {
@@ -93,6 +103,12 @@ function statusStyle(status: string) {
   return 'status-badge';
 }
 
+function decisionSummary(defaults: DCDefault[]) {
+  const counts = new Map<DCDecision, number>();
+  for (const record of defaults) counts.set(record.decision, (counts.get(record.decision) ?? 0) + 1);
+  return Array.from(counts, ([decision, count]) => `${count} ${decision}`).join(' · ') || 'No defaults';
+}
+
 export default function DCTab({
   onRefresh,
   onOpenStudent,
@@ -109,6 +125,15 @@ export default function DCTab({
   const [pendingCounts, setPendingCounts] = useState({ ready: 0, toDiscuss: 0, deferred: 0, due: 0 });
   const [pendingFilter, setPendingFilter] = useState<'ready' | 'discussion' | 'deferred' | 'due'>('ready');
   const [pendingBatchFilter, setPendingBatchFilter] = useState('');
+  const [pendingSearch, setPendingSearch] = useState('');
+  const [pendingSort, setPendingSort] = useState<'rollNo' | 'name' | 'defaultCount' | 'daysWaiting'>('daysWaiting');
+  const [pendingSortDirection, setPendingSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [pendingPage, setPendingPage] = useState(1);
+  const [pendingPageSize, setPendingPageSize] = useState(25);
+  const [expandedPendingRollNo, setExpandedPendingRollNo] = useState('');
+  const [bulkWorkflowAction, setBulkWorkflowAction] = useState<'flag_discussion' | 'defer' | null>(null);
+  const [bulkWorkflowReason, setBulkWorkflowReason] = useState('');
+  const [bulkWorkflowUntil, setBulkWorkflowUntil] = useState('');
   const [detail, setDetail] = useState<DCDetail | null>(null);
   const [studentSearch, setStudentSearch] = useState('');
   const [lookupResult, setLookupResult] = useState<{ query: string; kind: 'outside' | 'missing'; student?: RosterStudent } | null>(null);
@@ -232,6 +257,46 @@ export default function DCTab({
   const visiblePendingStudents = useMemo(() => pendingStudents.filter((student) =>
     !pendingBatchFilter || (pendingBatchFilter === 'not_set' ? !student.batch : student.batch === pendingBatchFilter),
   ), [pendingStudents, pendingBatchFilter]);
+  const pendingPlannerRows = useMemo(() => {
+    let rows: PendingPlannerRow[];
+    if (pendingFilter === 'ready') {
+      rows = visiblePendingStudents.map((student) => ({
+        ...student,
+        defaultCount: student.defaults.length,
+        status: 'Ready' as const,
+      }));
+    } else {
+      const byRollNo = new Map<string, PendingDefault[]>();
+      for (const record of visiblePendingRows as PendingDefault[]) {
+        byRollNo.set(record.rollNo, [...(byRollNo.get(record.rollNo) ?? []), record]);
+      }
+      rows = Array.from(byRollNo.entries()).map(([rollNo, defaults]) => {
+        const oldestDate = defaults.map((record) => record.date).filter(Boolean).sort()[0];
+        const daysWaiting = oldestDate ? Math.max(0, Math.floor((Date.now() - new Date(`${oldestDate}T00:00:00`).getTime()) / 86_400_000)) : 0;
+        return {
+          rollNo,
+          name: defaults[0].name,
+          batch: defaults[0].batch,
+          defaults,
+          defaultCount: defaults.length,
+          daysWaiting,
+          status: pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Due now',
+        };
+      });
+    }
+    const query = normalizeLookup(pendingSearch);
+    rows = rows.filter((row) => (!query || normalizeLookup(row.rollNo).includes(query) || normalizeName(row.name).includes(normalizeName(pendingSearch))));
+    rows.sort((a, b) => {
+      const comparison = pendingSort === 'rollNo' ? a.rollNo.localeCompare(b.rollNo)
+        : pendingSort === 'name' ? a.name.localeCompare(b.name)
+          : pendingSort === 'defaultCount' ? a.defaultCount - b.defaultCount
+            : a.daysWaiting - b.daysWaiting;
+      return comparison * (pendingSortDirection === 'asc' ? 1 : -1);
+    });
+    return rows;
+  }, [pendingFilter, visiblePendingStudents, visiblePendingRows, pendingSearch, pendingSort, pendingSortDirection]);
+  const pendingPageCount = Math.max(1, Math.ceil(pendingPlannerRows.length / pendingPageSize));
+  const pagedPendingRows = pendingPlannerRows.slice((pendingPage - 1) * pendingPageSize, pendingPage * pendingPageSize);
   const completionSummary = useMemo(() => {
     if (!detail) return null;
     const presentEntries = detail.entries.filter((entry) => entry.attendance === 'Present');
@@ -315,6 +380,47 @@ export default function DCTab({
     if (!targetDc || !selectedRollNos.length) return;
     await mutateDc(targetDc, { action: 'add_students', rollNos: selectedRollNos }, 'Students added to the planned DC.');
     setSelectedRollNos([]);
+  }
+
+  async function applyBulkWorkflow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!bulkWorkflowAction || !bulkWorkflowReason.trim()) return;
+    if (bulkWorkflowAction === 'defer' && !bulkWorkflowUntil) {
+      setError('Choose a deferral date or next DC.');
+      return;
+    }
+    const records = pendingPlannerRows
+      .filter((row) => selectedRollNos.includes(row.rollNo))
+      .flatMap((row) => row.defaults);
+    if (!records.length) return;
+    setBusy(true);
+    setError('');
+    let updated = 0;
+    try {
+      for (const record of records) {
+        await responseJson(await fetch(`/api/defaults/${encodeURIComponent(record.id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: bulkWorkflowAction,
+            reason: bulkWorkflowReason.trim(),
+            ...(bulkWorkflowAction === 'defer' ? { until: bulkWorkflowUntil } : {}),
+          }),
+        }));
+        updated += 1;
+      }
+      setMessage(`${updated} selected defaults updated.`);
+      setSelectedRollNos([]);
+      setBulkWorkflowAction(null);
+      setBulkWorkflowReason('');
+      setBulkWorkflowUntil('');
+      await Promise.all([loadOverview(), onRefresh()]);
+    } catch (caught) {
+      setError(`${updated} of ${records.length} defaults were updated before an error: ${caught instanceof Error ? caught.message : 'Unable to update selected defaults.'}`);
+      await Promise.all([loadOverview(), onRefresh()]);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function updateAttendance(entry: DCEntry, attendance: Attendance) {
@@ -730,9 +836,15 @@ export default function DCTab({
             ['discussion', `To discuss (${pendingCounts.toDiscuss})`],
             ['deferred', `Deferred (${pendingCounts.deferred})`],
             ['due', `Due now (${pendingCounts.due})`],
-          ] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={pendingFilter === key} className={`${buttonClass} ${pendingFilter === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPendingFilter(key)}>{label}</button>)}
+          ] as const).map(([key, label]) => <button key={key} type="button" aria-pressed={pendingFilter === key} className={`${buttonClass} ${pendingFilter === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setPendingFilter(key); setPendingPage(1); setSelectedRollNos([]); setBulkWorkflowAction(null); }}>{label}</button>)}
         </div>
-        <label className="mt-3 block max-w-xs text-sm">Filter by batch<select value={pendingBatchFilter} onChange={(event) => setPendingBatchFilter(event.target.value)} className={fieldClass}><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
+        <label className="mt-3 block max-w-xs text-sm">Filter by batch<select value={pendingBatchFilter} onChange={(event) => { setPendingBatchFilter(event.target.value); setPendingPage(1); setSelectedRollNos([]); setBulkWorkflowAction(null); }} className={fieldClass}><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="text-sm">Search by roll number or name<input type="search" value={pendingSearch} onChange={(event) => { setPendingSearch(event.target.value); setPendingPage(1); }} className={fieldClass} placeholder="Search students" /></label>
+          <label className="text-sm">Sort by<select value={pendingSort} onChange={(event) => setPendingSort(event.target.value as typeof pendingSort)} className={fieldClass}><option value="daysWaiting">Days waiting</option><option value="rollNo">Roll number</option><option value="name">Name</option><option value="defaultCount">Ready defaults</option></select></label>
+          <label className="text-sm">Rows per page<select value={pendingPageSize} onChange={(event) => { setPendingPageSize(Number(event.target.value)); setPendingPage(1); }} className={fieldClass}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label>
+          <div className="self-end text-sm text-slate-600">{pendingPlannerRows.length ? (pendingPage - 1) * pendingPageSize + 1 : 0}–{Math.min(pendingPage * pendingPageSize, pendingPlannerRows.length)} of {pendingPlannerRows.length} students</div>
+        </div>
 
         {showPlanForm && <form onSubmit={createDc} className="mt-5 grid gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 sm:grid-cols-2">
           <label className="text-sm font-medium">Date *<input required type="date" value={plan.date} onChange={(event) => setPlan({ ...plan, date: event.target.value })} className={fieldClass} /></label>
@@ -742,43 +854,64 @@ export default function DCTab({
           <div className="flex gap-2 sm:col-span-2"><button disabled={busy} className={`${buttonClass} btn-primary`}>Save DC</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => setShowPlanForm(false)}>Cancel</button></div>
         </form>}
 
-        {pendingFilter === 'ready' && pendingCount > 0 && visiblePendingStudents.length > 0 ? <div className="mt-5 space-y-3">
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-            <label className="text-sm font-medium">Planned DC<select value={targetDc} onChange={(event) => setTargetDc(event.target.value)} className={fieldClass}>
-              <option value="">Select a planned DC</option>{dcs.filter((dc) => dc.status === 'Planned').map((dc) => <option key={dc.id} value={dc.id}>{dc.date}{dc.time ? ` · ${dc.time}` : ''}{dc.venue ? ` · ${dc.venue}` : ''}</option>)}
-            </select></label>
-            <button type="button" disabled={!targetDc || !selectedRollNos.length || busy} className={`${buttonClass} btn-primary self-end`} onClick={() => void addSelectedStudents()}>Add selected to DC ({selectedRollNos.length})</button>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {visiblePendingStudents.map((student) => <article key={student.rollNo} className="rounded-xl border border-slate-200 p-3 hover:border-indigo-300">
-              <label className="flex min-h-11 items-start gap-3">
-                <input aria-label={`Select ${student.name}`} type="checkbox" checked={selectedRollNos.includes(student.rollNo)} onChange={(event) => setSelectedRollNos((current) => event.target.checked ? [...current, student.rollNo] : current.filter((rollNo) => rollNo !== student.rollNo))} className="mt-1 h-5 w-5" />
-                <span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><strong className="truncate">{student.name}</strong><span className={statusStyle('Pending')}>Ready</span></span><span className="text-xs text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'} · {student.defaultCount} ready defaults · {student.daysWaiting} days waiting</span></span>
-              </label>
-              <div className="mt-3 space-y-2 border-t pt-2">{student.defaults.map((record) => <div key={record.id} className="rounded-lg bg-slate-50 p-2 text-sm">
-                <p className="font-medium">{record.company} · {record.typeName}</p>
-                <div className="mt-2 flex flex-wrap gap-2"><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => openWorkflow(record, 'flag_discussion')}>Needs team discussion</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => openWorkflow(record, 'defer')}>Defer</button></div>
-              </div>)}</div>
-            </article>)}
-          </div>
-        </div> : pendingFilter === 'ready' && pendingCount === 0
-          ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No defaults are ready for a DC.</p>
-          : pendingFilter === 'ready' && pendingCount > 0
-            ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No students match this batch filter.</p>
-            : visiblePendingRows.length === 0
-            ? <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No defaults in this category.</p>
-            : <div className="mt-5 space-y-3">{(visiblePendingRows as PendingDefault[]).map((record) => <article key={record.id} className="rounded-xl border border-slate-200 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{record.name} · {record.rollNo}</h3><p className="text-sm text-slate-600">{record.batch ? `${record.batch === 'junior' ? 'Junior' : 'Senior'} batch · ` : 'Batch not set · '}{record.company} · {record.typeName}</p></div><span className={statusStyle(pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Pending')}>{pendingFilter === 'discussion' ? 'To discuss' : pendingFilter === 'deferred' ? 'Deferred' : 'Due now'}</span></div>
-              {pendingFilter === 'discussion' && <div className="mt-3 space-y-2">
-                <p className="text-sm"><strong>Reason:</strong> {record.discussion?.reason || '—'}{record.discussion?.discussionDate ? ` · Discussion date ${record.discussion.discussionDate}` : ''}</p>
-                {(record.discussion?.notes ?? []).map((note, index) => <p key={`${record.id}-note-${index}`} className="rounded bg-slate-50 p-2 text-sm">{note.text} <span className="text-xs text-slate-500">— {note.byName}</span></p>)}
-                <div className="flex flex-wrap gap-2"><input aria-label="Discussion note" value={discussionNotes[record.id] ?? ''} onChange={(event) => setDiscussionNotes((current) => ({ ...current, [record.id]: event.target.value }))} placeholder="Add a dated discussion note" className={fieldClass} /><button type="button" className={`${buttonClass} btn-secondary`} disabled={busy || !(discussionNotes[record.id] ?? '').trim()} onClick={() => void addDiscussionNote(record)}>Add note</button></div>
-                <div className="flex flex-wrap gap-2"><button type="button" className={`${buttonClass} btn-primary`} onClick={() => openWorkflow(record, 'resolve_discussion', 'Take to DC')}>Take to DC</button><button type="button" className={`${buttonClass} btn-danger`} onClick={() => openWorkflow(record, 'resolve_discussion', 'Remove')}>Remove</button><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => openWorkflow(record, 'resolve_discussion', 'Defer')}>Defer</button></div>
-              </div>}
-              {pendingFilter === 'deferred' && <div className="mt-3 space-y-2 text-sm"><p><strong>Until:</strong> {record.deferral?.until === 'next_dc' ? 'Next DC' : record.deferral?.until || '—'}</p><p><strong>Reason:</strong> {record.deferral?.reason || '—'}</p>{record.deferral?.history?.length ? <div><strong>Deferral history</strong><ul className="mt-1 list-disc space-y-1 pl-5">{record.deferral.history.map((item, index) => <li key={`${record.id}-deferral-${index}`}>{item.until === 'next_dc' ? 'Next DC' : item.until} — {item.reason} <span className="text-xs text-slate-500">({item.byName || 'Unknown member'} · {new Date(item.at).toLocaleDateString()})</span></li>)}</ul></div> : null}<button type="button" className={`${buttonClass} btn-secondary`} onClick={() => openWorkflow(record, 'extend_deferral')}>Extend deferral</button></div>}
-              {pendingFilter === 'due' && <div className="mt-3 space-y-2 text-sm"><p><strong>Deferred until:</strong> {record.deferral?.until === 'next_dc' ? 'Next DC' : record.deferral?.until || '—'}</p><p><strong>Reason:</strong> {record.deferral?.reason || '—'}</p><p>This default is back in Ready for DC.</p></div>}
-            </article>)}
-          </div>}
+        <div className="mt-4 flex flex-wrap items-end gap-2">
+          {pendingFilter === 'ready' && <><label className="min-w-52 text-sm font-medium">Planned DC<select value={targetDc} onChange={(event) => setTargetDc(event.target.value)} className={fieldClass}><option value="">Select a planned DC</option>{dcs.filter((dc) => dc.status === 'Planned').map((dc) => <option key={dc.id} value={dc.id}>{dc.date}{dc.time ? ` · ${dc.time}` : ''}{dc.venue ? ` · ${dc.venue}` : ''}</option>)}</select></label><button type="button" disabled={!targetDc || !selectedRollNos.length || busy} className={`${buttonClass} btn-primary`} onClick={() => void addSelectedStudents()}>Add to DC ({selectedRollNos.length})</button></>}
+          {pendingFilter === 'ready' && <><button type="button" disabled={!selectedRollNos.length || busy} className={`${buttonClass} btn-secondary`} onClick={() => { setBulkWorkflowAction('flag_discussion'); setBulkWorkflowReason(''); }}>Flag for team discussion</button>
+          <button type="button" disabled={!selectedRollNos.length || busy} className={`${buttonClass} btn-secondary`} onClick={() => { setBulkWorkflowAction('defer'); setBulkWorkflowReason(''); setBulkWorkflowUntil(''); }}>Defer selected</button></>}
+          <button type="button" disabled={!pendingPlannerRows.length} className="min-h-11 rounded-lg border px-3 py-2 text-sm" onClick={() => setSelectedRollNos(Array.from(new Set([...selectedRollNos, ...pendingPlannerRows.map((row) => row.rollNo)])))}>Select all matching</button>
+          <button type="button" disabled={!selectedRollNos.length} className="min-h-11 rounded-lg border px-3 py-2 text-sm" onClick={() => setSelectedRollNos([])}>Clear selection</button>
+        </div>
+        <div className="responsive-table mt-3 overflow-hidden rounded-xl border border-slate-200">
+          <table className="dc-roster-table w-full table-fixed text-left text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600"><tr>
+              <th className="w-10 px-2 py-2"><input type="checkbox" aria-label="Select all students on this page" checked={pagedPendingRows.length > 0 && pagedPendingRows.every((row) => selectedRollNos.includes(row.rollNo))} onChange={(event) => setSelectedRollNos((current) => event.target.checked ? Array.from(new Set([...current, ...pagedPendingRows.map((row) => row.rollNo)])) : current.filter((rollNo) => !pagedPendingRows.some((row) => row.rollNo === rollNo)))} /></th>
+              <th className="px-2 py-2"><button type="button" onClick={() => { setPendingSort('rollNo'); setPendingSortDirection(pendingSortDirection === 'asc' ? 'desc' : 'asc'); }}>Roll no</button></th>
+              <th className="px-2 py-2"><button type="button" onClick={() => { setPendingSort('name'); setPendingSortDirection(pendingSortDirection === 'asc' ? 'desc' : 'asc'); }}>Name</button></th>
+              <th className="px-2 py-2">Batch</th>
+              <th className="px-2 py-2"><button type="button" onClick={() => { setPendingSort('defaultCount'); setPendingSortDirection(pendingSortDirection === 'asc' ? 'desc' : 'asc'); }}>Defaults</button></th>
+              <th className="px-2 py-2"><button type="button" onClick={() => { setPendingSort('daysWaiting'); setPendingSortDirection(pendingSortDirection === 'asc' ? 'desc' : 'asc'); }}>Days waiting</button></th>
+              <th className="px-2 py-2">Status</th><th className="w-12 px-2 py-2">Details</th>
+            </tr></thead>
+            <tbody>{pagedPendingRows.map((row) => <Fragment key={row.rollNo}>
+              <tr className="border-t hover:bg-slate-50">
+                <td data-label="Select" className="px-2 py-2"><input type="checkbox" aria-label={`Select ${row.name}`} checked={selectedRollNos.includes(row.rollNo)} onChange={(event) => setSelectedRollNos((current) => event.target.checked ? [...current, row.rollNo] : current.filter((rollNo) => rollNo !== row.rollNo))} /></td>
+                <td data-label="Roll no" className="px-2 py-2">{row.rollNo}</td><td data-label="Name" className="px-2 py-2 font-medium">{row.name}</td>
+                <td data-label="Batch" className="px-2 py-2">{row.batch ? `${row.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</td>
+                <td data-label="Ready defaults" className="px-2 py-2">{row.defaultCount}</td><td data-label="Days waiting" className="px-2 py-2">{row.daysWaiting}</td>
+                <td data-label="Status" className="px-2 py-2"><span className={statusStyle(row.status)}>{row.status}</span></td>
+                <td data-label="Details" className="px-2 py-2"><button type="button" aria-label={`${expandedPendingRollNo === row.rollNo ? 'Collapse' : 'Expand'} ${row.name}`} aria-expanded={expandedPendingRollNo === row.rollNo} onClick={() => setExpandedPendingRollNo((current) => current === row.rollNo ? '' : row.rollNo)} className="min-h-9 w-9 rounded-full border">{expandedPendingRollNo === row.rollNo ? '−' : '›'}</button></td>
+              </tr>
+              {expandedPendingRollNo === row.rollNo && <tr className="dc-expanded-row border-t bg-slate-50"><td colSpan={8} className="px-3 py-3">
+                <div className="space-y-2">{row.defaults.map((record) => <div key={record.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-2">
+                  <div className="min-w-52"><strong>{record.company}</strong><p className="text-xs text-slate-600">{record.typeName} · logged {record.date}</p></div>
+                  {pendingFilter === 'ready' && <div className="flex flex-wrap gap-2"><button type="button" className="min-h-9 rounded border px-2 text-xs" onClick={() => openWorkflow(record, 'flag_discussion')}>Needs team discussion</button><button type="button" className="min-h-9 rounded border px-2 text-xs" onClick={() => openWorkflow(record, 'defer')}>Defer</button></div>}
+                  {pendingFilter === 'discussion' && <div className="flex flex-wrap gap-2">
+                    <span className="max-w-md text-xs text-slate-600">{record.discussion?.reason || '—'}{record.discussion?.discussionDate ? ` · ${record.discussion.discussionDate}` : ''}</span>
+                    <input aria-label="Add discussion note" value={discussionNotes[record.id] ?? ''} onChange={(event) => setDiscussionNotes((current) => ({ ...current, [record.id]: event.target.value }))} placeholder="Add note" className="min-h-9 rounded border px-2 text-xs" />
+                    <button type="button" className="min-h-9 rounded border px-2 text-xs" disabled={busy || !(discussionNotes[record.id] ?? '').trim()} onClick={() => void addDiscussionNote(record)}>Add note</button>
+                    <button type="button" className="min-h-9 rounded border px-2 text-xs" onClick={() => openWorkflow(record, 'resolve_discussion', 'Take to DC')}>Take to DC</button>
+                    <button type="button" className="min-h-9 rounded border px-2 text-xs" onClick={() => openWorkflow(record, 'resolve_discussion', 'Remove')}>Remove</button>
+                    <button type="button" className="min-h-9 rounded border px-2 text-xs" onClick={() => openWorkflow(record, 'resolve_discussion', 'Defer')}>Defer</button>
+                  </div>}
+                  {pendingFilter === 'deferred' && <div className="flex flex-wrap items-center gap-2 text-xs"><span>Until {record.deferral?.until === 'next_dc' ? 'Next DC' : record.deferral?.until || '—'} · {record.deferral?.reason || 'No reason'}</span><button type="button" className="min-h-9 rounded border px-2" onClick={() => openWorkflow(record, 'extend_deferral')}>Extend</button></div>}
+                  {pendingFilter === 'due' && <span className="text-xs text-slate-600">Previously deferred until {record.deferral?.until === 'next_dc' ? 'Next DC' : record.deferral?.until || '—'} · {record.deferral?.reason || '—'}</span>}
+                </div>)}</div>
+              </td></tr>}
+            </Fragment>)}
+              {!pagedPendingRows.length && <tr><td colSpan={8} className="px-3 py-8 text-center text-slate-500">{pendingPlannerRows.length ? 'No students on this page.' : 'No students match these filters.'}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm text-slate-600">{selectedRollNos.length} selected</span>
+          <div className="flex items-center gap-2"><button type="button" disabled={pendingPage <= 1} onClick={() => setPendingPage((page) => page - 1)} className="min-h-9 rounded border px-3">Previous</button><span className="text-sm">Page {pendingPage} of {pendingPageCount}</span><button type="button" disabled={pendingPage >= pendingPageCount} onClick={() => setPendingPage((page) => page + 1)} className="min-h-9 rounded border px-3">Next</button></div>
+        </div>
+        {bulkWorkflowAction && <form onSubmit={(event) => void applyBulkWorkflow(event)} className="mt-4 grid gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 sm:grid-cols-2">
+          <h3 className="font-semibold sm:col-span-2">{bulkWorkflowAction === 'flag_discussion' ? 'Flag selected defaults for team discussion' : 'Defer selected defaults'}</h3>
+          <label className="text-sm font-medium sm:col-span-2">Reason *<textarea required value={bulkWorkflowReason} onChange={(event) => setBulkWorkflowReason(event.target.value)} maxLength={2000} rows={2} className={fieldClass} /></label>
+          {bulkWorkflowAction === 'defer' && <label className="text-sm font-medium">Defer until *<select value={bulkWorkflowUntil} onChange={(event) => setBulkWorkflowUntil(event.target.value)} className={fieldClass}><option value="">Choose date or next DC</option><option value="next_dc">Next DC</option><option value={todayInIndia()}>Today</option>{Array.from({ length: 60 }, (_, index) => { const future = new Date(`${todayInIndia()}T00:00:00`); future.setDate(future.getDate() + index + 1); return future.toISOString().slice(0, 10); }).map((day) => <option key={day} value={day}>{day}</option>)}</select></label>}
+          <div className="flex items-end gap-2"><button type="submit" disabled={busy || !bulkWorkflowReason.trim() || (bulkWorkflowAction === 'defer' && !bulkWorkflowUntil)} className={`${buttonClass} btn-primary`}>{busy ? 'Saving…' : `Apply to ${selectedRollNos.length} selected students`}</button><button type="button" disabled={busy} onClick={() => setBulkWorkflowAction(null)} className={`${buttonClass} btn-secondary`}>Cancel</button></div>
+        </form>}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
@@ -874,13 +1007,21 @@ export default function DCTab({
         {detail.dc.notes && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{detail.dc.notes}</p>}
         {!detail.entries.length && <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No students are assigned to this DC yet.</p>}
         {detail.entries.length > 0 && !filteredEntries.length && !lookupResult && <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">No students match this search and attendance filter.</p>}
-        <div className="mt-5 space-y-3">
-          {filteredEntries.map((entry) => <article key={entry.rollNo} className="rounded-xl border border-slate-200 bg-white">
-            <button type="button" aria-expanded={expandedRollNo === entry.rollNo} className="flex min-h-14 w-full flex-wrap items-center justify-between gap-3 p-4 text-left hover:bg-slate-50" onClick={() => setExpandedRollNo((current) => current === entry.rollNo ? '' : entry.rollNo)}>
-              <span><strong>{entry.studentName}</strong><span className="ml-2 text-sm text-slate-500">{entry.rollNo} · {entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'} · {entry.defaults.length} defaults</span></span>
-              <span className="flex items-center gap-2"><span className={statusStyle(entry.attendance)}>{entry.attendance}</span><span aria-hidden="true">{expandedRollNo === entry.rollNo ? '−' : '+'}</span></span>
-            </button>
-            {expandedRollNo === entry.rollNo && <div className="border-t border-slate-200 p-4">
+        <div className="responsive-table mt-5 overflow-hidden rounded-xl border border-slate-200">
+          <table className="w-full table-fixed text-left text-sm">
+            <thead className="bg-slate-50 text-slate-600"><tr>
+              <th className="px-3 py-2">Roll no</th><th className="px-3 py-2">Student</th><th className="px-3 py-2">Batch</th><th className="px-3 py-2">Attendance</th><th className="px-3 py-2">Decision summary</th><th className="w-14 px-2 py-2">Details</th>
+            </tr></thead>
+            <tbody>{filteredEntries.map((entry) => <Fragment key={entry.rollNo}>
+              <tr className="border-t border-slate-200 hover:bg-slate-50">
+                <td data-label="Roll no" className="px-3 py-3">{entry.rollNo}</td>
+                <td data-label="Student" className="px-3 py-3 font-medium">{entry.studentName}</td>
+                <td data-label="Batch" className="px-3 py-3">{entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</td>
+                <td data-label="Attendance" className="px-3 py-3"><span className={statusStyle(entry.attendance)}>{entry.attendance}</span></td>
+                <td data-label="Decisions" className="px-3 py-3 text-xs text-slate-600">{decisionSummary(entry.defaults)}</td>
+                <td data-label="Details" className="px-2 py-2"><button type="button" aria-label={`${expandedRollNo === entry.rollNo ? 'Collapse' : 'Expand'} ${entry.studentName}`} aria-expanded={expandedRollNo === entry.rollNo} className="min-h-9 w-9 rounded-full border" onClick={() => setExpandedRollNo((current) => current === entry.rollNo ? '' : entry.rollNo)}>{expandedRollNo === entry.rollNo ? '−' : '›'}</button></td>
+              </tr>
+              {expandedRollNo === entry.rollNo && <tr className="border-t border-slate-200 bg-slate-50"><td colSpan={6} className="p-4">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold">{entry.studentName}</h3><p className="text-sm text-slate-500">{entry.rollNo}</p></div><button type="button" className={`${buttonClass} btn-secondary`} onClick={() => void onOpenStudent(entry.rollNo)}>Student page &amp; history</button></div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <label className="text-sm font-medium">Attendance<select disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} value={entry.attendance} onChange={(event) => void updateAttendance(entry, event.target.value as Attendance)} className={fieldClass}><option>Pending</option><option>Present</option><option>Absent</option></select></label>
@@ -902,8 +1043,9 @@ export default function DCTab({
             </div>}
             <label className="mt-4 block text-sm font-medium">Remarks<textarea disabled={(detail.dc.status !== 'Planned' && detail.dc.status !== 'In progress') || busy} defaultValue={entry.remarks} onBlur={(event) => void saveRemarks(entry, event.target.value)} rows={2} maxLength={2000} placeholder="Reason accepted, warning issued…" className={fieldClass} /></label>
             {detail.dc.status === 'Planned' && <button type="button" className={`${buttonClass} btn-danger mt-3`} onClick={() => void removeStudent(entry)} disabled={busy}>Remove student from DC</button>}
-            </div>}
-          </article>)}
+              </td></tr>}
+            </Fragment>)}</tbody>
+          </table>
         </div>
         {(detail.dc.status === 'Planned' || detail.dc.status === 'In progress') && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
           <p className="text-sm text-slate-600">{attendanceComplete ? 'All students have an attendance status.' : 'Mark every student Present or Absent before completing this DC.'}</p>

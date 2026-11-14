@@ -49,6 +49,7 @@ async function setupDatabase(db: Db) {
     db.collection('students').createIndex({ batch: 1 }),
     db.collection('defaults').createIndex({ id: 1 }, { unique: true }),
     db.collection('defaults').createIndex({ source: 1, id: 1 }),
+    db.collection('defaults').createIndex({ removedInDcId: 1 }),
     db.collection('defaults').createIndex({ rollNoNormalized: 1, date: -1 }),
     db.collection('default_types').createIndex({ id: 1 }, { unique: true }),
     db.collection('audit_log').createIndex({ at: -1 }),
@@ -103,6 +104,35 @@ async function setupDatabase(db: Db) {
       },
     })));
   }
+
+  const importedRemoved = await db.collection('defaults').find(
+    { source: 'excel_import', status: 'removed' },
+    { projection: { _id: 1, date: 1, dcDate: 1 } },
+  ).toArray();
+  const importedDcDates = Array.from(new Set(importedRemoved.map((record) => String(record.dcDate ?? '').slice(0, 10)).filter(Boolean)));
+  for (const date of importedDcDates) {
+    const id = `imported:${date}`;
+    await db.collection('dcs').updateOne(
+      { id },
+      {
+        $setOnInsert: {
+          id, date, time: '', venue: '', status: 'Completed', notes: 'Historical DC created from imported defaults.',
+          source: 'import', imported: true, autoAdd: false, isCurrent: false, cancelReason: '',
+          createdBy: 'system', createdAt: new Date(`${date}T00:00:00.000Z`), completedBy: 'system',
+          completedAt: new Date(`${date}T00:00:00.000Z`),
+        },
+      },
+      { upsert: true },
+    );
+    await db.collection('defaults').updateMany(
+      { source: 'excel_import', status: 'removed', dcDate: date },
+      { $set: { removedInDcId: id, dcId: id } },
+    );
+  }
+  await db.collection('defaults').updateMany(
+    { source: 'excel_import', status: 'removed', $or: [{ dcDate: { $exists: false } }, { dcDate: '' }] },
+    { $set: { removedInDcId: 'imported:no-date' } },
+  );
 
   const members = db.collection('members');
   const memberCollectionExists = await db.listCollections({ name: 'members' }, { nameOnly: true }).hasNext();

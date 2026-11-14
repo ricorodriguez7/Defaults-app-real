@@ -46,15 +46,19 @@ export async function GET(request: Request) {
       {},
       { projection: { _id: 0, rollNo: 1, name: 1, batch: 1, numberOfDefaults: 1, lockPenaltyStatus: 1 } },
     ).sort({ rollNo: 1 }).toArray();
-    const counts = await db.collection('defaults').aggregate<{ _id: string; count: number }>([
-      { $match: { status: { $ne: 'removed' } } },
-      { $group: { _id: '$rollNoNormalized', count: { $sum: 1 } } },
+    const counts = await db.collection('defaults').aggregate<{ _id: string; active: number; removed: number }>([
+      { $group: {
+        _id: '$rollNoNormalized',
+        active: { $sum: { $cond: [{ $ne: ['$status', 'removed'] }, 1, 0] } },
+        removed: { $sum: { $cond: [{ $eq: ['$status', 'removed'] }, 1, 0] } },
+      } },
     ]).toArray();
-    const defaultsByRollNo = new Map(counts.map((entry) => [entry._id, entry.count]));
+    const defaultsByRollNo = new Map(counts.map((entry) => [entry._id, entry]));
     return NextResponse.json(roster.map((student) => ({
       ...student,
       batchLabel: batchLabel(student.batch),
-      numberOfDefaults: defaultsByRollNo.get(normalizeRollNo(student.rollNo)) ?? student.numberOfDefaults ?? 0,
+      numberOfDefaults: defaultsByRollNo.get(normalizeRollNo(student.rollNo))?.active ?? student.numberOfDefaults ?? 0,
+      numberOfRemovedDefaults: defaultsByRollNo.get(normalizeRollNo(student.rollNo))?.removed ?? 0,
     })));
   } catch (error) {
     console.error('Unable to load students from MongoDB.', error);

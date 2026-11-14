@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { downloadWorkbook, MAX_EXCEL_BYTES, MAX_EXCEL_FILE_MESSAGE } from '@/lib/excel-download';
 import DCSummaryTab from './dc-summary';
 import DCTab from './dc-tab';
+import DashboardDCTab from './dashboard-dc-tab';
 
 type Student = {
   rollNo: string;
@@ -13,6 +14,7 @@ type Student = {
   batch?: 'junior' | 'senior';
   batchLabel?: string;
   numberOfDefaults?: number;
+  numberOfRemovedDefaults?: number;
   lockPenaltyStatus?: string;
   studentLocked?: boolean;
 };
@@ -45,6 +47,8 @@ type DefaultRecord = {
   updatedByMemberId: string;
   updatedByName: string;
   removedAt?: string;
+  removeReason?: string;
+  removedInDcId?: string;
   lockedAt?: string;
   dcReference?: string;
   dcDate?: string;
@@ -97,6 +101,7 @@ type StudentHistoryDefault = DefaultRecord & {
 };
 
 type ViewName = 'defaults' | 'default-import' | 'students' | 'dc' | 'members' | 'activity' | 'settings';
+type DashboardTab = 'overview' | 'dc';
 type SettingsSubView = 'data' | 'types';
 type ResetCategory = 'defaults' | 'dcs' | 'importBatches' | 'auditLog' | 'students' | 'types' | 'members';
 type DefaultImportIssue = { row: number; column: string; reason: string; severity: 'warning' | 'error' };
@@ -163,6 +168,8 @@ export default function HomePage() {
   const { data: session, status: sessionStatus } = useSession();
   const accountEmail = session?.user?.email?.toLowerCase() ?? '';
   const [view, setView] = useState<ViewName>('defaults');
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
+  const [dashboardCounts, setDashboardCounts] = useState({ total: 0, logged: 0, locked: 0, removed: 0, toDiscuss: 0, deferred: 0 });
   const [settingsSubView, setSettingsSubView] = useState<SettingsSubView>('data');
   const [dcSubView, setDcSubView] = useState<'planner' | 'summary'>('planner');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -191,7 +198,7 @@ export default function HomePage() {
   const [discussionDate, setDiscussionDate] = useState('');
   const [studentSearch, setStudentSearch] = useState('');
   const [defaultSearch, setDefaultSearch] = useState('');
-  const [defaultStatusFilter, setDefaultStatusFilter] = useState('all');
+  const [defaultStatusFilter, setDefaultStatusFilter] = useState('active');
   const [studentDetail, setStudentDetail] = useState<{ student: Student; defaults: StudentHistoryDefault[] } | null>(null);
   const [activity, setActivity] = useState<EventRecord[]>([]);
   const [activityHasMore, setActivityHasMore] = useState(false);
@@ -247,14 +254,16 @@ export default function HomePage() {
     const query = defaultSearch.trim().toLowerCase();
     return defaults.filter((record) =>
       (showRemoved || record.status !== 'removed') &&
-      (defaultStatusFilter === 'all' || record.status === defaultStatusFilter) &&
+      (defaultStatusFilter === 'all' || (defaultStatusFilter === 'active'
+        ? record.status !== 'removed'
+        : record.status === defaultStatusFilter)) &&
       (!batchFilter || (batchFilter === 'not_set'
         ? !studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch
         : studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch === batchFilter)) &&
       (!query || [record.rollNo, record.company, record.typeName, record.loggedByName].some((value) => value.toLowerCase().includes(query))),
     );
   }, [defaults, showRemoved, defaultSearch, defaultStatusFilter, batchFilter, studentsByRollNo]);
-  const includeRemovedDefaults = showRemoved || defaultStatusFilter === 'removed';
+  const includeRemovedDefaults = showRemoved || defaultStatusFilter === 'removed' || defaultStatusFilter === 'all';
   const selectableMembers = useMemo(
     () => members.filter((member) => member.active && isSelectableTeam(member.team)),
     [members],
@@ -263,11 +272,7 @@ export default function HomePage() {
     () => selectableMembers.find((member) => member.email?.toLowerCase() === accountEmail) ?? null,
     [selectableMembers, accountEmail],
   );
-  const stats = useMemo(() => ({
-    total: defaults.filter((record) => record.status !== 'removed').length,
-    logged: defaults.filter((record) => record.status === 'logged').length,
-    locked: defaults.filter((record) => record.status === 'locked').length,
-  }), [defaults]);
+  const stats = dashboardCounts;
   const matchedStudent = useMemo(
     () => students.find((student) => normalizeRollNo(student.rollNo) === normalizeRollNo(studentSearch)),
     [students, studentSearch],
@@ -280,20 +285,23 @@ export default function HomePage() {
   const loadDashboard = useCallback(async () => {
     setDashboardLoading(true);
     try {
-      const [studentsResponse, defaultsResponse, typesResponse, membersResponse] = await Promise.all([
+      const [studentsResponse, defaultsResponse, typesResponse, membersResponse, summaryResponse] = await Promise.all([
         fetch('/api/students', { cache: 'no-store' }),
         fetch(`/api/defaults?includeRemoved=${includeRemovedDefaults}`, { cache: 'no-store' }),
         fetch('/api/default-types', { cache: 'no-store' }),
         fetch('/api/members', { cache: 'no-store' }),
+        fetch('/api/dashboard/summary', { cache: 'no-store' }),
       ]);
-      const [studentsData, defaultsData, typesData, membersData] = await Promise.all([
+      const [studentsData, defaultsData, typesData, membersData, summaryData] = await Promise.all([
         responseJson(studentsResponse),
         responseJson(defaultsResponse),
         responseJson(typesResponse),
         responseJson(membersResponse),
+        responseJson(summaryResponse),
       ]);
       setStudents(studentsData);
       setDefaults(defaultsData);
+      setDashboardCounts(summaryData.counts);
       setDefaultTypes(typesData);
       setMembers(membersData);
       setTypeId((current) => current || typesData[0]?.id || '');
@@ -1118,8 +1126,20 @@ export default function HomePage() {
             {statusMessage && <p role="status" className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">{statusMessage}</p>}
 
       {view === 'defaults' && <>
-        <section className="mb-8 grid gap-4 md:grid-cols-3">
-          {[['Total defaults', stats.total, 'text-slate-900'], ['Logged', stats.logged, 'text-emerald-600'], ['Locked', stats.locked, 'text-amber-600']].map(([label, count, color]) => (
+        <div className="mb-5 flex gap-2 border-b border-slate-200" role="tablist" aria-label="Dashboard tabs">
+          <button type="button" role="tab" aria-selected={dashboardTab === 'overview'} onClick={() => setDashboardTab('overview')} className={`border-b-2 px-4 py-3 text-sm font-semibold ${dashboardTab === 'overview' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}>Overview</button>
+          <button type="button" role="tab" aria-selected={dashboardTab === 'dc'} onClick={() => setDashboardTab('dc')} className={`border-b-2 px-4 py-3 text-sm font-semibold ${dashboardTab === 'dc' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}>DC</button>
+        </div>
+        {dashboardTab === 'overview' ? <>
+        <section className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+          {[
+            ['Total defaults', stats.total, 'text-slate-900'],
+            ['Logged', stats.logged, 'text-emerald-600'],
+            ['Locked', stats.locked, 'text-amber-600'],
+            ['Removed', stats.removed, 'text-slate-500'],
+            ['Awaiting team decision', stats.toDiscuss, 'text-violet-600'],
+            ['Deferred', stats.deferred, 'text-sky-600'],
+          ].map(([label, count, color]) => (
             <div key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{label}</p><p className={`mt-3 text-3xl font-bold ${color}`}>{count}</p></div>
           ))}
         </section>
@@ -1149,21 +1169,23 @@ export default function HomePage() {
           </form>
           <aside className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-slate-900">Student roster</h2>
-            <div className="mt-4 max-h-[440px] space-y-2 overflow-auto pr-1">{students.map((student) => <button key={student.rollNo} onClick={() => { setStudentSearch(student.rollNo); setView('students'); setStudentDetail(null); }} className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left hover:bg-indigo-50"><span><span className="block font-medium text-slate-800">{student.name}</span><span className="text-xs uppercase text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</span></span><span className="text-right text-xs text-slate-600">{student.numberOfDefaults ?? 0} defaults<br />{student.lockPenaltyStatus ?? 'Clear'}</span></button>)}</div>
+            <div className="mt-4 max-h-[440px] space-y-2 overflow-auto pr-1">{students.map((student) => <button key={student.rollNo} onClick={() => { setStudentSearch(student.rollNo); setView('students'); setStudentDetail(null); }} className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left hover:bg-indigo-50"><span><span className="block font-medium text-slate-800">{student.name}</span><span className="text-xs uppercase text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</span></span><span className="text-right text-xs text-slate-600">{student.numberOfDefaults ?? 0} defaults · {student.numberOfRemovedDefaults ?? 0} removed<br />{student.lockPenaltyStatus ?? 'Clear'}</span></button>)}</div>
           </aside>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="sticky-filters mb-4 flex flex-wrap items-end justify-between gap-3 bg-white py-2"><div><h2 className="text-xl font-semibold text-slate-900">Defaults</h2><p className="text-sm text-slate-500">{activeDefaults.length} results</p></div><div className="flex flex-wrap items-end gap-3"><label className="text-sm">Search<input value={defaultSearch} onChange={(event) => setDefaultSearch(event.target.value)} placeholder="Student, company, type…" className="mt-1 min-h-11 rounded-lg border px-3" /></label><label className="text-sm">Batch<select value={batchFilter} onChange={(event) => setBatchFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label><label className="text-sm">Status<select value={defaultStatusFilter} onChange={(event) => setDefaultStatusFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="all">All statuses</option><option value="logged">Logged</option><option value="locked">Locked</option><option value="removed">Removed</option></select></label><label className="flex min-h-11 items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={showRemoved} onChange={(event) => setShowRemoved(event.target.checked)} />Show removed</label></div></div>
-          <div className="responsive-table"><table className="min-w-full text-left text-sm"><thead className="border-b bg-slate-50 text-slate-600"><tr>{['Student', 'Batch', 'Company', 'Type', 'Logged by', 'Team', 'Date logged', 'Last updated by', 'Status', 'Actions'].map((header) => <th key={header} className="px-3 py-3 font-medium">{header}</th>)}</tr></thead><tbody>
-            {activeDefaults.map((record) => <tr key={record.id} className="border-b align-top">
+          <div className="sticky-filters mb-4 flex flex-wrap items-end justify-between gap-3 bg-white py-2"><div><h2 className="text-xl font-semibold text-slate-900">Defaults</h2><p className="text-sm text-slate-500">{activeDefaults.length} results</p></div><div className="flex flex-wrap items-end gap-3"><label className="text-sm">Search<input value={defaultSearch} onChange={(event) => setDefaultSearch(event.target.value)} placeholder="Student, company, type…" className="mt-1 min-h-11 rounded-lg border px-3" /></label><label className="text-sm">Batch<select value={batchFilter} onChange={(event) => setBatchFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label><label className="text-sm">Status<select value={defaultStatusFilter} onChange={(event) => setDefaultStatusFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="active">Active defaults</option><option value="all">All statuses</option><option value="logged">Logged</option><option value="locked">Locked</option><option value="removed">Removed</option></select></label></div></div>
+          <div className="responsive-table"><table className="min-w-full text-left text-sm"><thead className="border-b bg-slate-50 text-slate-600"><tr>{['Student', 'Batch', 'Company', 'Type', 'Logged by', 'Team', 'Date logged', 'Last updated by', 'Status', ...(defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved ? ['Removed on', 'DC date', 'Removal reason'] : []), 'Actions'].map((header) => <th key={header} className="px-3 py-3 font-medium">{header}</th>)}</tr></thead><tbody>
+            {activeDefaults.map((record) => <tr key={record.id} className={`border-b align-top ${record.status === 'removed' ? 'bg-slate-50 text-slate-500' : ''}`}>
               <td data-label="Student" className="px-3 py-3"><button className="text-left" onClick={() => void openDefault(record)}><span className="block font-medium text-indigo-700">{students.find((student) => normalizeRollNo(student.rollNo) === normalizeRollNo(record.rollNo))?.name ?? record.rollNo}</span><span className="text-xs text-slate-500">{record.rollNo}</span></button></td>
               <td data-label="Batch" className="px-3 py-3">{studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch ? `${studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</td><td data-label="Company" className="px-3 py-3">{record.company}</td><td data-label="Type" className="px-3 py-3">{record.typeName}</td><td data-label="Logged by" className="px-3 py-3">{record.loggedByName}</td><td data-label="Team" className="px-3 py-3">{teamLabel(record.team)}</td><td data-label="Date logged" className="px-3 py-3">{new Date(record.createdAt).toLocaleString()}</td><td data-label="Last updated by" className="px-3 py-3">{record.updatedByName}</td>
               <td data-label="Status" className="px-3 py-3"><span className={`status-badge ${record.status === 'locked' ? 'status-pending' : record.status === 'removed' ? 'status-danger' : 'status-success'}`}>{record.status === 'logged' ? 'Logged' : record.status === 'locked' ? 'Locked' : 'Removed'}</span></td>
+              {(defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved) && <><td data-label="Removed on" className="px-3 py-3">{record.status === 'removed' && record.removedAt ? new Date(record.removedAt).toLocaleDateString() : '—'}</td><td data-label="DC date" className="px-3 py-3">{record.status === 'removed' ? record.dcDate ?? record.dcReference ?? '—' : '—'}</td><td data-label="Removal reason" className="px-3 py-3">{record.status === 'removed' ? record.removeReason ?? record.notes ?? '—' : '—'}</td></>}
               <td data-label="Actions" className="px-3 py-3"><button onClick={() => void openDefault(record)} className="rounded border px-2 py-1 text-xs">Details</button></td>
             </tr>)}
-            {!activeDefaults.length && <tr><td colSpan={10} className="px-4 py-8 text-center text-slate-500">{defaults.length ? 'No defaults match these filters.' : 'No defaults yet.'}</td></tr>}
+            {!activeDefaults.length && <tr><td colSpan={defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved ? 13 : 10} className="px-4 py-8 text-center text-slate-500">{defaults.length ? 'No defaults match these filters.' : 'No defaults yet.'}</td></tr>}
           </tbody></table></div>
         </section>
+        </> : <DashboardDCTab />}
       </>}
 
       {view === 'default-import' && <section className="space-y-6">
@@ -1262,9 +1284,9 @@ export default function HomePage() {
           </tbody></table></div>
         </div>
         {studentDetail && <div className="mt-6">
-          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="text-2xl font-semibold">{studentDetail.student.name}</h3><p className="text-slate-500">{studentDetail.student.rollNo}</p><p className="mt-2 text-sm">Defaults: {studentDetail.student.numberOfDefaults}</p><p className="mt-1 text-sm">Batch: {studentDetail.student.batch ? `${studentDetail.student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</p>          <label className="mt-2 block text-sm">Change batch<select aria-label="Change student batch" value={studentDetail.student.batch ?? ''} onChange={(event) => { if (['', 'junior', 'senior'].includes(event.target.value)) void changeStudentBatch(studentDetail.student.rollNo, event.target.value as 'junior' | 'senior' | ''); }} className="mt-1 rounded-lg border px-3 py-2"><option value="">Not set</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option></select></label></div><button onClick={() => void toggleStudentLock()} className="rounded-lg border px-3 py-2">{studentDetail.student.studentLocked ? 'Unlock student' : 'Lock student'}</button></div>
-          <h4 className="mt-6 font-semibold">Default and DC decision history</h4>
-          <div className="mt-2 space-y-3">{studentDetail.defaults.map((record) => (
+          <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="text-2xl font-semibold">{studentDetail.student.name}</h3><p className="text-slate-500">{studentDetail.student.rollNo}</p><p className="mt-2 text-sm">Defaults: {studentDetail.student.numberOfDefaults} · Removed: {studentDetail.student.numberOfRemovedDefaults ?? 0}</p><p className="mt-1 text-sm">Batch: {studentDetail.student.batch ? `${studentDetail.student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</p>          <label className="mt-2 block text-sm">Change batch<select aria-label="Change student batch" value={studentDetail.student.batch ?? ''} onChange={(event) => { if (['', 'junior', 'senior'].includes(event.target.value)) void changeStudentBatch(studentDetail.student.rollNo, event.target.value as 'junior' | 'senior' | ''); }} className="mt-1 rounded-lg border px-3 py-2"><option value="">Not set</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option></select></label></div><button onClick={() => void toggleStudentLock()} className="rounded-lg border px-3 py-2">{studentDetail.student.studentLocked ? 'Unlock student' : 'Lock student'}</button></div>
+          <h4 className="mt-6 font-semibold">Active defaults ({studentDetail.defaults.filter((record) => record.status !== 'removed').length})</h4>
+          <div className="mt-2 space-y-3">{studentDetail.defaults.filter((record) => record.status !== 'removed').map((record) => (
             <article key={record.id} className="rounded-lg border border-slate-200 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -1291,7 +1313,14 @@ export default function HomePage() {
               </div>
               <button type="button" onClick={() => void openDefault(record)} className="mt-3 rounded border px-3 py-2 text-sm">Open default details</button>
             </article>
-          ))}</div>
+          ))}{!studentDetail.defaults.some((record) => record.status !== 'removed') && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No active defaults.</p>}</div>
+          <h4 className="mt-6 font-semibold text-slate-600">Removed defaults ({studentDetail.defaults.filter((record) => record.status === 'removed').length})</h4>
+          <div className="mt-2 space-y-3">{studentDetail.defaults.filter((record) => record.status === 'removed').map((record) => (
+            <article key={record.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-slate-500">
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><h5 className="font-semibold">{record.company} · {record.typeName}</h5><p className="mt-1 text-sm">Default date: {record.date} · Removed on {record.removedAt ? new Date(record.removedAt).toLocaleDateString() : '—'}</p><p className="text-sm">DC date: {record.dcDate ?? record.dcReference ?? '—'}</p><p className="text-sm">Reason: {record.removeReason ?? record.notes ?? '—'}</p></div><span className="status-badge bg-slate-200 text-slate-700">Removed</span></div>
+              <button type="button" onClick={() => void openDefault(record)} className="mt-3 rounded border px-3 py-2 text-sm">Open history</button>
+            </article>
+          ))}{!studentDetail.defaults.some((record) => record.status === 'removed') && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No removed defaults.</p>}</div>
         </div>}
       </section>}
 

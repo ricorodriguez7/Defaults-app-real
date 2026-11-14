@@ -73,6 +73,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
       student: {
         ...student,
         numberOfDefaults: defaults.filter((record) => record.status !== 'removed').length,
+        numberOfRemovedDefaults: defaults.filter((record) => record.status === 'removed').length,
         studentLocked: student.studentLocked === true,
       },
       defaults: defaults.map((record) => ({

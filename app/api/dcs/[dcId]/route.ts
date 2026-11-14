@@ -468,7 +468,11 @@ export async function PATCH(request: Request, { params }: RouteContext) {
               set.dcId = dcId;
               set.dcReference = dc.date;
               set.status = nextStatus;
-              if (item.decision === 'Remove') set.removedAt = now;
+              if (item.decision === 'Remove') {
+                set.removedAt = now;
+                set.removedInDcId = dcId;
+                set.removeReason = entry.remarks || item.reason || 'Removed by Disciplinary Committee.';
+              }
               if (item.decision === 'Keep') set.lockedAt = now;
             } else if (item.decision === 'Discuss with team') {
               set.discussion = {

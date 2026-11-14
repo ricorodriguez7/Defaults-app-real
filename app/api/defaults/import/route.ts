@@ -454,7 +454,12 @@ export async function POST(request: Request) {
           updatedAt: now,
           updatedByMemberId: actor.memberId,
           ...(row.status === 'locked' ? { lockedAt: statusDate } : {}),
-          ...(row.status === 'removed' ? { removedAt: statusDate } : {}),
+          ...(row.status === 'removed' ? {
+            removedAt: statusDate,
+            removeReason: row.notes,
+            removedInDcId: row.dcDate ? `imported:${row.dcDate}` : 'imported:no-date',
+            ...(row.dcDate ? { dcId: `imported:${row.dcDate}` } : {}),
+          } : {}),
           ...(row.dcDate ? { dcDate: row.dcDate } : {}),
         };
         initialStatuses[id] = row.status;
@@ -506,6 +511,25 @@ export async function POST(request: Request) {
         await transactionDb.collection('default_events').insertMany(
           chunk.flatMap(({ events }) => events),
           { session },
+        );
+      }
+      const historicalDcDates = Array.from(new Set(records
+        .filter(({ row }) => row.status === 'removed' && row.dcDate)
+        .map(({ row }) => row.dcDate)));
+      for (const dcDate of historicalDcDates) {
+        const dcId = `imported:${dcDate}`;
+        await transactionDb.collection('dcs').updateOne(
+          { id: dcId },
+          {
+            $setOnInsert: {
+              id: dcId, date: dcDate, time: '', venue: '', status: 'Completed',
+              notes: 'Historical DC created from imported defaults.', source: 'import', imported: true,
+              autoAdd: false, isCurrent: false, cancelReason: '', createdBy: 'system',
+              createdAt: new Date(`${dcDate}T00:00:00.000Z`), completedBy: 'system',
+              completedAt: new Date(`${dcDate}T00:00:00.000Z`),
+            },
+          },
+          { upsert: true, session },
         );
       }
       imported = records.length;

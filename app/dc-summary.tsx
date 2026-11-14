@@ -29,7 +29,7 @@ type Entry = {
   attendance: 'Pending' | 'Present' | 'Absent';
   absentReason: string;
   remarks: string;
-  defaults: Array<{ id: string; company: string; typeName: string; date: string; decision: string; reason?: string; until?: string; discussionDate?: string }>;
+  defaults: Array<{ id: string; company: string; typeName: string; date: string; status: 'logged' | 'locked' | 'removed'; decision: string; reason?: string; until?: string; discussionDate?: string }>;
 };
 
 type DcDetail = { dc: DcOverview; entries: Entry[] };
@@ -141,7 +141,7 @@ export default function DCSummaryTab() {
       const entries = (detail?.entries ?? []).filter((entry) =>
         group.key === 'not_set' ? !entry.batch : entry.batch === group.key,
       );
-      const defaults = entries.flatMap((entry) => entry.defaults ?? []);
+      const defaults = entries.flatMap((entry) => entry.defaults ?? []).filter((item) => item.status !== 'removed');
       return {
         ...group,
         called: entries.length,
