@@ -208,7 +208,7 @@
     return `${heading("CONFIGURATION", "Settings", "Manage default types, penalty thresholds and your member directory.", actions)}${notice()}<div class="settings-layout"><div><section class="panel settings-panel"><div class="panel-header"><div><h2>Default types</h2><p>Inactive types stay attached to historical records</p></div><button class="button button-small" data-action="new-type">＋ Add type</button></div><div class="settings-list">${types || `<div class="empty-state">No default types yet.</div>`}</div></section>
       <section class="panel settings-panel"><div class="panel-header"><div><h2>Penalty rules</h2><p>Applied to active defaults from the effective count</p></div><button class="button button-small" data-action="new-rule">＋ Add rule</button></div><div class="settings-list">${rules || `<div class="empty-state">No penalty rules yet.</div>`}</div></section></div>
       <div><section class="panel settings-panel"><div class="panel-header"><div><h2>Member directory</h2><p>Everyone has the same access in this prototype</p></div><button class="button button-small" data-action="import" data-kind="members">Upload</button></div><div class="settings-list">${state.members.map(m => `<div class="setting-row"><div class="student-cell"><span class="student-mini">${esc(initials(m.name))}</span><div class="setting-detail"><strong>${esc(m.name)}</strong><small>${esc(m.team)}${m.email ? ` · ${esc(m.email)}` : ""}</small></div></div></div>`).join("") || `<div class="empty-state">No members uploaded.</div>`}</div></section>
-      <section class="panel settings-panel"><div class="panel-header"><div><h2>Data management</h2><p>Import existing records or export your current filters</p></div></div><div class="settings-list"><div class="setting-row"><div class="setting-detail"><strong>Import existing defaults</strong><small>Validate an Excel sheet before adding records.</small></div><button class="button button-small" data-action="import" data-kind="defaults">Import</button></div><div class="setting-row"><div class="setting-detail"><strong>Export workbook</strong><small>Summary and detail sheets for committee review.</small></div><button class="button button-small" data-action="export">Export</button></div><div class="setting-row"><div class="setting-detail"><strong>Local demo data</strong><small>Clear this browser's saved tracker data.</small></div><button class="button button-small button-danger" data-action="reset">Reset</button></div></div></section></div></div>`;
+      </div></div>`;
   }
   function renderAudit() {
     const entries = state.audit;
@@ -591,11 +591,7 @@
     else if (action === "import") openImport(kind);
     else if (action === "export") exportWorkbook();
     else if (action === "export-audit") exportAudit();
-    else if (action === "reset") {
-      if (confirm("Clear all tracker data saved in this browser and restore the fictional demo data?")) {
-        state = structuredClone(initialData); persist(); render(); notify("Demo data restored.");
-      }
-    } else if (action === "switch-user") {
+ else if (action === "switch-user") {
       if (!state.members.length) { notify("Upload the member list first.", true); return; }
       const currentIndex = state.members.findIndex(m => m.id === state.currentMemberId);
       state.currentMemberId = state.members[(currentIndex + 1) % state.members.length].id;

@@ -114,7 +114,7 @@ export default function DCTab({
   onOpenStudent,
 }: {
   onRefresh: () => Promise<void>;
-  onOpenStudent: (rollNo: string) => Promise<void>;
+  onOpenStudent: (rollNo: string) => void;
 }) {
   const [dcs, setDcs] = useState<DCRecord[]>([]);
   const [roster, setRoster] = useState<RosterStudent[]>([]);
@@ -875,7 +875,7 @@ export default function DCTab({
             <tbody>{pagedPendingRows.map((row) => <Fragment key={row.rollNo}>
               <tr className="border-t hover:bg-slate-50">
                 <td data-label="Select" className="px-2 py-2"><input type="checkbox" aria-label={`Select ${row.name}`} checked={selectedRollNos.includes(row.rollNo)} onChange={(event) => setSelectedRollNos((current) => event.target.checked ? [...current, row.rollNo] : current.filter((rollNo) => rollNo !== row.rollNo))} /></td>
-                <td data-label="Roll no" className="px-2 py-2">{row.rollNo}</td><td data-label="Name" className="px-2 py-2 font-medium">{row.name}</td>
+                <td data-label="Roll no" className="px-2 py-2">{row.rollNo}</td><td data-label="Name" className="px-2 py-2 font-medium"><button type="button" onClick={() => onOpenStudent(row.rollNo)} className="text-left text-indigo-700 hover:underline">{row.name}</button></td>
                 <td data-label="Batch" className="px-2 py-2">{row.batch ? `${row.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</td>
                 <td data-label="Ready defaults" className="px-2 py-2">{row.defaultCount}</td><td data-label="Days waiting" className="px-2 py-2">{row.daysWaiting}</td>
                 <td data-label="Status" className="px-2 py-2"><span className={statusStyle(row.status)}>{row.status}</span></td>
@@ -1014,8 +1014,8 @@ export default function DCTab({
             </tr></thead>
             <tbody>{filteredEntries.map((entry) => <Fragment key={entry.rollNo}>
               <tr className="border-t border-slate-200 hover:bg-slate-50">
-                <td data-label="Roll no" className="px-3 py-3">{entry.rollNo}</td>
-                <td data-label="Student" className="px-3 py-3 font-medium">{entry.studentName}</td>
+                <td data-label="Roll no" className="px-3 py-3"><button type="button" onClick={() => onOpenStudent(entry.rollNo)} className="text-indigo-700 hover:underline">{entry.rollNo}</button></td>
+                <td data-label="Student" className="px-3 py-3 font-medium"><button type="button" onClick={() => onOpenStudent(entry.rollNo)} className="text-left text-indigo-700 hover:underline">{entry.studentName}</button></td>
                 <td data-label="Batch" className="px-3 py-3">{entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</td>
                 <td data-label="Attendance" className="px-3 py-3"><span className={statusStyle(entry.attendance)}>{entry.attendance}</span></td>
                 <td data-label="Decisions" className="px-3 py-3 text-xs text-slate-600">{decisionSummary(entry.defaults)}</td>

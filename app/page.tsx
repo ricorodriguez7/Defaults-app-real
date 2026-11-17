@@ -1,6 +1,7 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { signIn, signOut, useSession } from 'next-auth/react';
 import * as XLSX from 'xlsx';
 import { downloadWorkbook, MAX_EXCEL_BYTES, MAX_EXCEL_FILE_MESSAGE } from '@/lib/excel-download';
@@ -100,10 +101,9 @@ type StudentHistoryDefault = DefaultRecord & {
   }>;
 };
 
-type ViewName = 'defaults' | 'default-import' | 'students' | 'dc' | 'members' | 'activity' | 'settings';
+type ViewName = 'defaults' | 'default-import' | 'students' | 'roster-batches' | 'student-import' | 'dc' | 'members' | 'activity' | 'settings';
 type DashboardTab = 'overview' | 'dc';
-type SettingsSubView = 'data' | 'types';
-type ResetCategory = 'defaults' | 'dcs' | 'importBatches' | 'auditLog' | 'students' | 'types' | 'members';
+type SettingsSubView = 'backup' | 'types';
 type DefaultImportIssue = { row: number; column: string; reason: string; severity: 'warning' | 'error' };
 type DefaultImportPreview = {
   counts: { rowsRead: number; ready: number; warnings: number; errors: number };
@@ -125,16 +125,6 @@ type ImportBatch = {
   undoneAt?: string;
   undoBlockReason: string;
 };
-
-const resetCategoryLabels: Array<{ key: ResetCategory; label: string }> = [
-  { key: 'defaults', label: 'Defaults and their history' },
-  { key: 'dcs', label: 'DCs and DC entries' },
-  { key: 'importBatches', label: 'Import batches' },
-  { key: 'auditLog', label: 'Audit log' },
-  { key: 'students', label: 'Students' },
-  { key: 'types', label: 'Default types and penalty rules' },
-  { key: 'members', label: 'Members (your own account is preserved)' },
-];
 
 const normalizeRollNo = (value: string) => String(value ?? '').trim().toUpperCase();
 const teamLabel = (team: string) => team === 'placement_cell' ? 'Placement cell' : team === 'summer_internship' ? 'Summer internship' : team;
@@ -166,14 +156,17 @@ function jsonBodyWithinLimit(value: unknown) {
 
 export default function HomePage() {
   const { data: session, status: sessionStatus } = useSession();
+  const pathname = usePathname();
+  const router = useRouter();
   const accountEmail = session?.user?.email?.toLowerCase() ?? '';
   const [view, setView] = useState<ViewName>('defaults');
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
   const [dashboardCounts, setDashboardCounts] = useState({ total: 0, logged: 0, locked: 0, removed: 0, toDiscuss: 0, deferred: 0 });
-  const [settingsSubView, setSettingsSubView] = useState<SettingsSubView>('data');
+  const [settingsSubView, setSettingsSubView] = useState<SettingsSubView>('backup');
   const [dcSubView, setDcSubView] = useState<'planner' | 'summary'>('planner');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const returnViewRef = useRef<ViewName>('defaults');
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [students, setStudents] = useState<Student[]>([]);
   const [defaults, setDefaults] = useState<DefaultRecord[]>([]);
@@ -197,6 +190,8 @@ export default function HomePage() {
   const [discussionReason, setDiscussionReason] = useState('');
   const [discussionDate, setDiscussionDate] = useState('');
   const [studentSearch, setStudentSearch] = useState('');
+  const [studentDetailLoading, setStudentDetailLoading] = useState(false);
+  const [studentDetailError, setStudentDetailError] = useState('');
   const [defaultSearch, setDefaultSearch] = useState('');
   const [defaultStatusFilter, setDefaultStatusFilter] = useState('active');
   const [studentDetail, setStudentDetail] = useState<{ student: Student; defaults: StudentHistoryDefault[] } | null>(null);
@@ -210,6 +205,7 @@ export default function HomePage() {
   const [rosterSearch, setRosterSearch] = useState('');
   const [selectedStudentRollNos, setSelectedStudentRollNos] = useState<string[]>([]);
   const [bulkStudentBatch, setBulkStudentBatch] = useState('');
+  const [batchConfirmation, setBatchConfirmation] = useState<{ rollNos: string[]; batch: 'junior' | 'senior' | ''; promote: boolean } | null>(null);
   const [memberSearch, setMemberSearch] = useState('');
   const [memberTeamFilter, setMemberTeamFilter] = useState('');
   const [memberStatusFilter, setMemberStatusFilter] = useState('all');
@@ -235,13 +231,6 @@ export default function HomePage() {
   const [defaultImportStopOnError, setDefaultImportStopOnError] = useState(false);
   const [defaultImportBusy, setDefaultImportBusy] = useState(false);
   const [importBatches, setImportBatches] = useState<ImportBatch[]>([]);
-  const [resetEnabled, setResetEnabled] = useState(false);
-  const [resetCounts, setResetCounts] = useState<Record<ResetCategory, number> | null>(null);
-  const [resetSelected, setResetSelected] = useState<ResetCategory[]>(['defaults', 'dcs', 'importBatches']);
-  const [resetConfirmation, setResetConfirmation] = useState('');
-  const [backupToken, setBackupToken] = useState('');
-  const [resetBusy, setResetBusy] = useState(false);
-  const [resetResult, setResetResult] = useState<{ removed?: Record<string, number>; errors?: string[] } | null>(null);
   const [defaultTypeForm, setDefaultTypeForm] = useState<{ id?: string; name: string; description: string; appliesTo: string } | null>(null);
   const [managedTypes, setManagedTypes] = useState<DefaultType[]>([]);
   const [typeDeleteTarget, setTypeDeleteTarget] = useState<DefaultType | null>(null);
@@ -273,14 +262,24 @@ export default function HomePage() {
     [selectableMembers, accountEmail],
   );
   const stats = dashboardCounts;
-  const matchedStudent = useMemo(
-    () => students.find((student) => normalizeRollNo(student.rollNo) === normalizeRollNo(studentSearch)),
-    [students, studentSearch],
-  );
   const filteredStudents = useMemo(() => students.filter((student) =>
     (!studentBatchFilter || (studentBatchFilter === 'not_set' ? !student.batch : student.batch === studentBatchFilter)) &&
     (!rosterSearch.trim() || `${student.name} ${student.rollNo}`.toLowerCase().includes(rosterSearch.trim().toLowerCase())),
   ), [students, studentBatchFilter, rosterSearch]);
+  const rosterBatchCounts = useMemo(() => ({
+    total: students.length,
+    junior: students.filter((student) => student.batch === 'junior').length,
+    senior: students.filter((student) => student.batch === 'senior').length,
+    notSet: students.filter((student) => !student.batch).length,
+  }), [students]);
+  const studentRouteRollNo = useMemo(() => {
+    if (!pathname?.startsWith('/students/')) return '';
+    try {
+      return decodeURIComponent(pathname.slice('/students/'.length)).replace(/\/$/, '');
+    } catch {
+      return pathname.slice('/students/'.length).replace(/\/$/, '');
+    }
+  }, [pathname]);
 
   const loadDashboard = useCallback(async () => {
     setDashboardLoading(true);
@@ -318,6 +317,49 @@ export default function HomePage() {
       loadDashboard().catch((error) => setStatusMessage(error instanceof Error ? error.message : 'Unable to load tracker data.'));
     }
   }, [sessionStatus, loadDashboard]);
+
+  useEffect(() => {
+    if (sessionStatus !== 'authenticated') return;
+    if (!studentRouteRollNo) {
+      setStudentDetail(null);
+      setStudentDetailLoading(false);
+      setView((current) => current === 'students' ? returnViewRef.current : current);
+      return;
+    }
+    let active = true;
+    setView('students');
+    setStudentSearch(studentRouteRollNo);
+    setStudentDetail(null);
+    setStudentDetailError('');
+    setStudentDetailLoading(true);
+    void fetch(`/api/students/${encodeURIComponent(studentRouteRollNo)}`, { cache: 'no-store' })
+      .then(responseJson)
+      .then((data) => { if (active) setStudentDetail(data); })
+      .catch((error) => {
+        if (!active) return;
+        setStudentDetailError(error instanceof Error && error.message === 'Student not found.'
+          ? 'Roll number not found in the dataset'
+          : error instanceof Error ? error.message : 'Unable to load student detail.');
+      })
+      .finally(() => { if (active) setStudentDetailLoading(false); });
+    return () => { active = false; };
+  }, [sessionStatus, studentRouteRollNo]);
+
+  function openStudentPage(rollNo: string) {
+    const trimmed = rollNo.trim();
+    if (!trimmed) return;
+    if (!studentRouteRollNo) returnViewRef.current = view;
+    const destination = `/students/${encodeURIComponent(trimmed)}`;
+    setView('students');
+    setStudentSearch(trimmed);
+    if (pathname !== destination) {
+      setDetail(null);
+      setStudentDetail(null);
+      setStudentDetailError('');
+      setStudentDetailLoading(true);
+      router.push(destination);
+    }
+  }
 
   async function handleLookup() {
     const trimmed = normalizeRollNo(rollNumber);
@@ -609,12 +651,6 @@ export default function HomePage() {
     downloadWorkbook(workbook, 'defaults_import_errors.xlsx');
   }
 
-  async function loadResetCounts() {
-    const data = await responseJson(await fetch('/api/data-management', { cache: 'no-store' }));
-    setResetEnabled(data.enabled);
-    setResetCounts(data.counts);
-  }
-
   async function loadManagedTypes() {
     const data = await responseJson(await fetch('/api/default-types?includeInactive=true', { cache: 'no-store' }));
     setManagedTypes(data);
@@ -658,59 +694,22 @@ export default function HomePage() {
     }
   }
 
-  useEffect(() => {
-    if (sessionStatus === 'authenticated' && view === 'settings') {
-      loadResetCounts().catch((error) => setStatusMessage(error instanceof Error ? error.message : 'Unable to load data management.'));
-    }
-  }, [sessionStatus, view]);
-
   async function exportEverything() {
     try {
-      const response = await fetch('/api/data-management/export', { cache: 'no-store' });
+      const response = await fetch('/api/backup/export', { cache: 'no-store' });
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.message || `Request failed (${response.status}).`);
       }
-      const token = response.headers.get('X-Data-Backup-Token');
-      if (!token) throw new Error('The server did not confirm the backup export. Reset remains locked.');
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement('a');
       link.href = url;
       link.download = 'default-tracker-backup.xlsx';
       link.click();
       URL.revokeObjectURL(url);
-      setBackupToken(token);
-      setResetResult(null);
-      setStatusMessage('Backup exported. The reset controls are unlocked for 30 minutes.');
+      setStatusMessage('Full backup downloaded.');
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : 'Unable to export all data.');
-    }
-  }
-
-  function chooseResetPreset(preset: 'test' | 'full') {
-    setResetSelected(preset === 'test'
-      ? ['defaults', 'dcs', 'importBatches']
-      : resetCategoryLabels.map(({ key }) => key));
-    setResetResult(null);
-  }
-
-  async function performDataReset() {
-    setResetBusy(true);
-    try {
-      const result = await responseJson(await fetch('/api/data-management', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selected: resetSelected, confirmation: resetConfirmation, backupToken }),
-      }));
-      setResetResult(result);
-      setBackupToken('');
-      setResetConfirmation('');
-      setStatusMessage(result.errors?.length ? 'Reset completed with errors; review the per-collection results.' : result.message);
-      await Promise.all([loadResetCounts(), loadDashboard()]);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Unable to clear selected data.');
-    } finally {
-      setResetBusy(false);
     }
   }
 
@@ -856,17 +855,13 @@ export default function HomePage() {
     }
   }
 
-  async function loadStudentDetail() {
-    if (!matchedStudent) {
-      setStatusMessage('Enter a valid roll number from the roster.');
+  function loadStudentDetail() {
+    if (!studentSearch.trim()) {
+      setStudentDetailError('Enter a roll number to search.');
       return;
     }
-    try {
-      setStudentDetail(await responseJson(await fetch(`/api/students/${encodeURIComponent(matchedStudent.rollNo)}`, { cache: 'no-store' })));
-      setView('students');
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Unable to load student detail.');
-    }
+    setStudentDetailError('');
+    openStudentPage(studentSearch);
   }
 
   async function changeStudentBatch(rollNo: string, batch: 'junior' | 'senior' | '') {
@@ -887,31 +882,40 @@ export default function HomePage() {
     }
   }
 
-  async function updateSelectedStudentBatches() {
+  function updateSelectedStudentBatches() {
     if (!selectedStudentRollNos.length || !bulkStudentBatch) return;
+    setBatchConfirmation({
+      rollNos: [...selectedStudentRollNos],
+      batch: bulkStudentBatch === 'junior' ? 'junior' : bulkStudentBatch === 'senior' ? 'senior' : '',
+      promote: false,
+    });
+  }
+
+  function confirmPromoteJuniorBatch() {
+    const juniorRollNos = students.filter((student) => student.batch === 'junior').map((student) => student.rollNo);
+    if (!juniorRollNos.length) return;
+    setBatchConfirmation({ rollNos: juniorRollNos, batch: 'senior', promote: true });
+  }
+
+  async function confirmBatchUpdate() {
+    if (!batchConfirmation) return;
     try {
       const result = await responseJson(await fetch('/api/students/batch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rollNos: selectedStudentRollNos, batch: bulkStudentBatch }),
+        body: JSON.stringify({ rollNos: batchConfirmation.rollNos, batch: batchConfirmation.batch }),
       }));
       setStatusMessage(`Updated ${result.updated} students${result.notFound ? `; ${result.notFound} were not found` : ''}.`);
       setSelectedStudentRollNos([]);
       setBulkStudentBatch('');
+      setBatchConfirmation(null);
       await loadDashboard();
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : 'Unable to update selected student batches.');
     }
   }
 
-  async function openStudentFromDc(rollNo: string) {
-    try {
-      const studentData = await responseJson(await fetch(`/api/students/${encodeURIComponent(rollNo)}`, { cache: 'no-store' }));
-      setStudentSearch(rollNo);
-      setStudentDetail(studentData);
-      setView('students');
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Unable to load student history.');
-    }
+  function openStudentFromDc(rollNo: string) {
+    openStudentPage(rollNo);
   }
 
   async function toggleStudentLock() {
@@ -933,7 +937,7 @@ export default function HomePage() {
       }));
       setStudentLockAction(null);
       setStudentLockReason('');
-      await loadStudentDetail();
+      setStudentDetail(await responseJson(await fetch(`/api/students/${encodeURIComponent(studentDetail.student.rollNo)}`, { cache: 'no-store' })));
       setStatusMessage(`Student ${action}ed.`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : 'Unable to update student lock.');
@@ -1053,12 +1057,14 @@ export default function HomePage() {
             {([
               ['defaults', 'Defaults'],
               ['students', 'Students'],
+              ['roster-batches', 'Roster batches'],
+              ['student-import', 'Student import'],
               ['dc', 'Disciplinary Committee'],
               ['members', 'Members'],
               ['activity', 'Activity'],
               ['settings', 'Settings'],
             ] as Array<[ViewName, string]>).map(([key, label]) => (
-              <button key={key} type="button" onClick={() => { setView(key); setSidebarOpen(false); if (key === 'dc') setDcSubView('planner'); if (key === 'settings') setSettingsSubView('data'); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium transition ${view === key || (key === 'defaults' && view === 'default-import') ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
+              <button key={key} type="button" onClick={() => { setView(key); setSidebarOpen(false); if (studentRouteRollNo && key !== 'students') router.push('/'); if (key === 'dc') setDcSubView('planner'); if (key === 'settings') setSettingsSubView('backup'); }} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium transition ${view === key || (key === 'defaults' && view === 'default-import') ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
                 <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-800 text-xs font-semibold">{label.slice(0, 1)}</span>
                 {!sidebarCollapsed && <span>{label}</span>}
               </button>
@@ -1079,7 +1085,7 @@ export default function HomePage() {
             {view === 'settings' && !sidebarCollapsed && (
               <div className="ml-8 mt-2 space-y-1 rounded-xl border border-slate-800 bg-slate-900 p-2">
                 {([
-                  ['data', 'Data management'],
+                  ['backup', 'Data backup'],
                   ['types', 'Default types'],
                 ] as Array<[SettingsSubView, string]>).map(([key, label]) => (
                   <button key={key} type="button" onClick={() => setSettingsSubView(key)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${settingsSubView === key ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}>
@@ -1104,15 +1110,12 @@ export default function HomePage() {
               <div className="flex items-center gap-3">
                 <button type="button" className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg text-slate-700 md:hidden" onClick={() => setSidebarOpen((current) => !current)} aria-label="Toggle navigation">☰</button>
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-indigo-600">{view === 'dc' ? 'Disciplinary Committee' : view === 'defaults' || view === 'default-import' ? 'Defaults' : view === 'students' ? 'Students' : view === 'members' ? 'Members' : view === 'settings' ? 'Settings' : 'Activity'}</p>
-                  <h2 className="mt-1 text-2xl font-bold text-slate-900">{view === 'dc' ? (dcSubView === 'summary' ? 'DC Summary' : 'DC Planner') : view === 'defaults' ? 'Defaults' : view === 'default-import' ? 'Import from Excel' : view === 'students' ? 'Student roster' : view === 'members' ? 'Members' : view === 'settings' ? (settingsSubView === 'types' ? 'Default types' : 'Data management') : 'Activity log'}</h2>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-indigo-600">{view === 'dc' ? 'Disciplinary Committee' : view === 'defaults' || view === 'default-import' ? 'Defaults' : view === 'students' || view === 'roster-batches' || view === 'student-import' ? 'Students' : view === 'members' ? 'Members' : view === 'settings' ? 'Settings' : 'Activity'}</p>
+                  <h2 className="mt-1 text-2xl font-bold text-slate-900">{view === 'dc' ? (dcSubView === 'summary' ? 'DC Summary' : 'DC Planner') : view === 'defaults' ? 'Defaults' : view === 'default-import' ? 'Import from Excel' : view === 'students' ? 'Student history' : view === 'roster-batches' ? 'Roster batches' : view === 'student-import' ? 'Student import' : view === 'members' ? 'Members' : view === 'settings' ? (settingsSubView === 'types' ? 'Default types' : 'Data backup') : 'Activity log'}</h2>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="hidden text-sm text-slate-600 sm:inline">{accountEmail}</span>
-                <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100">
-                  Upload roster<input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleRosterUpload} />
-                </label>
                 <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100">
                   Upload members<input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleMemberUpload} />
                 </label>
@@ -1169,14 +1172,14 @@ export default function HomePage() {
           </form>
           <aside className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-slate-900">Student roster</h2>
-            <div className="mt-4 max-h-[440px] space-y-2 overflow-auto pr-1">{students.map((student) => <button key={student.rollNo} onClick={() => { setStudentSearch(student.rollNo); setView('students'); setStudentDetail(null); }} className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left hover:bg-indigo-50"><span><span className="block font-medium text-slate-800">{student.name}</span><span className="text-xs uppercase text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</span></span><span className="text-right text-xs text-slate-600">{student.numberOfDefaults ?? 0} defaults · {student.numberOfRemovedDefaults ?? 0} removed<br />{student.lockPenaltyStatus ?? 'Clear'}</span></button>)}</div>
+            <div className="mt-4 max-h-[440px] space-y-2 overflow-auto pr-1">{students.map((student) => <button key={student.rollNo} onClick={() => openStudentPage(student.rollNo)} className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left hover:bg-indigo-50"><span><span className="block font-medium text-slate-800">{student.name}</span><span className="text-xs uppercase text-slate-500">{student.rollNo} · {student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</span></span><span className="text-right text-xs text-slate-600">{student.numberOfDefaults ?? 0} defaults · {student.numberOfRemovedDefaults ?? 0} removed<br />{student.lockPenaltyStatus ?? 'Clear'}</span></button>)}</div>
           </aside>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="sticky-filters mb-4 flex flex-wrap items-end justify-between gap-3 bg-white py-2"><div><h2 className="text-xl font-semibold text-slate-900">Defaults</h2><p className="text-sm text-slate-500">{activeDefaults.length} results</p></div><div className="flex flex-wrap items-end gap-3"><label className="text-sm">Search<input value={defaultSearch} onChange={(event) => setDefaultSearch(event.target.value)} placeholder="Student, company, type…" className="mt-1 min-h-11 rounded-lg border px-3" /></label><label className="text-sm">Batch<select value={batchFilter} onChange={(event) => setBatchFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label><label className="text-sm">Status<select value={defaultStatusFilter} onChange={(event) => setDefaultStatusFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="active">Active defaults</option><option value="all">All statuses</option><option value="logged">Logged</option><option value="locked">Locked</option><option value="removed">Removed</option></select></label></div></div>
           <div className="responsive-table"><table className="min-w-full text-left text-sm"><thead className="border-b bg-slate-50 text-slate-600"><tr>{['Student', 'Batch', 'Company', 'Type', 'Logged by', 'Team', 'Date logged', 'Last updated by', 'Status', ...(defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved ? ['Removed on', 'DC date', 'Removal reason'] : []), 'Actions'].map((header) => <th key={header} className="px-3 py-3 font-medium">{header}</th>)}</tr></thead><tbody>
             {activeDefaults.map((record) => <tr key={record.id} className={`border-b align-top ${record.status === 'removed' ? 'bg-slate-50 text-slate-500' : ''}`}>
-              <td data-label="Student" className="px-3 py-3"><button className="text-left" onClick={() => void openDefault(record)}><span className="block font-medium text-indigo-700">{students.find((student) => normalizeRollNo(student.rollNo) === normalizeRollNo(record.rollNo))?.name ?? record.rollNo}</span><span className="text-xs text-slate-500">{record.rollNo}</span></button></td>
+              <td data-label="Student" className="px-3 py-3"><button type="button" className="text-left" onClick={() => openStudentPage(record.rollNo)}><span className="block font-medium text-indigo-700">{students.find((student) => normalizeRollNo(student.rollNo) === normalizeRollNo(record.rollNo))?.name ?? record.rollNo}</span><span className="text-xs text-slate-500">{record.rollNo}</span></button></td>
               <td data-label="Batch" className="px-3 py-3">{studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch ? `${studentsByRollNo.get(normalizeRollNo(record.rollNo))?.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</td><td data-label="Company" className="px-3 py-3">{record.company}</td><td data-label="Type" className="px-3 py-3">{record.typeName}</td><td data-label="Logged by" className="px-3 py-3">{record.loggedByName}</td><td data-label="Team" className="px-3 py-3">{teamLabel(record.team)}</td><td data-label="Date logged" className="px-3 py-3">{new Date(record.createdAt).toLocaleString()}</td><td data-label="Last updated by" className="px-3 py-3">{record.updatedByName}</td>
               <td data-label="Status" className="px-3 py-3"><span className={`status-badge ${record.status === 'locked' ? 'status-pending' : record.status === 'removed' ? 'status-danger' : 'status-success'}`}>{record.status === 'logged' ? 'Logged' : record.status === 'locked' ? 'Locked' : 'Removed'}</span></td>
               {(defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved) && <><td data-label="Removed on" className="px-3 py-3">{record.status === 'removed' && record.removedAt ? new Date(record.removedAt).toLocaleDateString() : '—'}</td><td data-label="DC date" className="px-3 py-3">{record.status === 'removed' ? record.dcDate ?? record.dcReference ?? '—' : '—'}</td><td data-label="Removal reason" className="px-3 py-3">{record.status === 'removed' ? record.removeReason ?? record.notes ?? '—' : '—'}</td></>}
@@ -1185,7 +1188,7 @@ export default function HomePage() {
             {!activeDefaults.length && <tr><td colSpan={defaultStatusFilter === 'removed' || defaultStatusFilter === 'all' || showRemoved ? 13 : 10} className="px-4 py-8 text-center text-slate-500">{defaults.length ? 'No defaults match these filters.' : 'No defaults yet.'}</td></tr>}
           </tbody></table></div>
         </section>
-        </> : <DashboardDCTab />}
+        </> : <DashboardDCTab onOpenStudent={openStudentPage} />}
       </>}
 
       {view === 'default-import' && <section className="space-y-6">
@@ -1262,27 +1265,61 @@ export default function HomePage() {
       </section>}
 
       {view === 'dc' && dcSubView === 'planner' && <DCTab onRefresh={loadDashboard} onOpenStudent={openStudentFromDc} />}
-      {view === 'dc' && dcSubView === 'summary' && <DCSummaryTab />}
+      {view === 'dc' && dcSubView === 'summary' && <DCSummaryTab onOpenStudent={openStudentFromDc} />}
 
-      {view === 'students' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold">Student history</h2><button type="button" onClick={downloadStudentTemplate} className="rounded-lg border px-3 py-2 text-sm">Download sample Excel</button></div>
-        <div className="mt-4 flex items-end gap-2"><label className="w-full max-w-sm text-sm font-medium">Student roll number<input value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void loadStudentDetail(); } }} placeholder="Search by roll number" className="mt-1 w-full rounded-lg border px-3 py-2" /></label><button onClick={() => void loadStudentDetail()} className="rounded-lg bg-indigo-600 px-4 py-2 text-white">Search</button></div>
-        <div className="mt-8 border-t pt-5">
+      {view === 'roster-batches' && <section className="space-y-5">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <div><h3 className="font-semibold">Roster batches</h3><p className="text-sm text-slate-500">{filteredStudents.length} students · Not set means no batch is assigned.</p></div>
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="text-sm">Search roster<input value={rosterSearch} onChange={(event) => setRosterSearch(event.target.value)} placeholder="Name or roll number" className="mt-1 min-h-10 rounded-lg border px-3" /></label>
-              <label className="text-sm">Filter batch<select value={studentBatchFilter} onChange={(event) => setStudentBatchFilter(event.target.value)} className="mt-1 min-h-10 rounded-lg border px-3"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
-              <label className="text-sm">Set selected to<select value={bulkStudentBatch} onChange={(event) => setBulkStudentBatch(event.target.value)} className="mt-1 min-h-10 rounded-lg border px-3"><option value="">Choose batch</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="unset">Not set</option></select></label>
-              <button type="button" disabled={!selectedStudentRollNos.length || !bulkStudentBatch} onClick={() => void updateSelectedStudentBatches()} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-sm text-white disabled:bg-slate-300">Update {selectedStudentRollNos.length} selected</button>
-            </div>
+            <div><h2 className="text-xl font-semibold">Roster batches</h2><p className="mt-1 text-sm text-slate-500">{rosterBatchCounts.total} students · Not set means no batch is assigned.</p></div>
+            <button type="button" disabled={!rosterBatchCounts.junior} onClick={confirmPromoteJuniorBatch} className="min-h-11 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 disabled:opacity-50">Promote all Junior to Senior</button>
           </div>
-          <div className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Select all filtered students" checked={filteredStudents.length > 0 && filteredStudents.every((student) => selectedStudentRollNos.includes(student.rollNo))} onChange={(event) => setSelectedStudentRollNos(event.target.checked ? Array.from(new Set([...selectedStudentRollNos, ...filteredStudents.map((student) => student.rollNo)])) : selectedStudentRollNos.filter((rollNo) => !filteredStudents.some((student) => student.rollNo === rollNo)))} />Select all visible</div>
-          <div className="responsive-table mt-2 max-h-96 overflow-auto"><table className="min-w-full text-left text-sm"><thead className="sticky top-0 border-b bg-slate-50 text-slate-600"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Student</th><th className="px-3 py-2">Roll number</th><th className="px-3 py-2">Batch</th></tr></thead><tbody>
-            {filteredStudents.map((student) => <tr key={student.rollNo} className="border-b"><td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${student.name}`} checked={selectedStudentRollNos.includes(student.rollNo)} onChange={(event) => setSelectedStudentRollNos(event.target.checked ? [...selectedStudentRollNos, student.rollNo] : selectedStudentRollNos.filter((rollNo) => rollNo !== student.rollNo))} /></td><td className="px-3 py-2">{student.name}</td><td className="px-3 py-2">{student.rollNo}</td><td className="px-3 py-2">{student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</td></tr>)}
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {[['Junior batch', rosterBatchCounts.junior], ['Senior batch', rosterBatchCounts.senior], ['Not set', rosterBatchCounts.notSet]].map(([label, count]) => <div key={label} className="rounded-lg bg-slate-50 p-3"><p className="text-sm text-slate-500">{label}</p><p className="mt-1 text-2xl font-semibold">{count}</p></div>)}
+          </div>
+        </section>
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-sm">Search roster<input value={rosterSearch} onChange={(event) => setRosterSearch(event.target.value)} placeholder="Name or roll number" className="mt-1 min-h-11 rounded-lg border px-3" /></label>
+              <label className="text-sm">Filter batch<select value={studentBatchFilter} onChange={(event) => setStudentBatchFilter(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
+              <label className="text-sm">Set selected to<select value={bulkStudentBatch} onChange={(event) => setBulkStudentBatch(event.target.value)} className="mt-1 min-h-11 rounded-lg border px-3"><option value="">Choose batch</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="unset">Not set</option></select></label>
+              <button type="button" disabled={!selectedStudentRollNos.length || !bulkStudentBatch} onClick={updateSelectedStudentBatches} className="min-h-11 rounded-lg bg-indigo-600 px-3 text-sm text-white disabled:bg-slate-300">Update {selectedStudentRollNos.length} selected</button>
+            </div>
+            <span className="text-sm text-slate-500">{filteredStudents.length} students shown</span>
+          </div>
+          <div className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Select all visible students" checked={filteredStudents.length > 0 && filteredStudents.every((student) => selectedStudentRollNos.includes(student.rollNo))} onChange={(event) => setSelectedStudentRollNos((current) => event.target.checked ? Array.from(new Set([...current, ...filteredStudents.map((student) => student.rollNo)])) : current.filter((rollNo) => !filteredStudents.some((student) => student.rollNo === rollNo)))} />Select all visible</div>
+          <div className="responsive-table mt-2 max-h-[60vh] overflow-auto"><table className="min-w-full text-left text-sm"><thead className="sticky top-0 border-b bg-slate-50 text-slate-600"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Student</th><th className="px-3 py-2">Roll number</th><th className="px-3 py-2">Batch</th></tr></thead><tbody>
+            {filteredStudents.map((student) => <tr key={student.rollNo} className="border-b"><td data-label="Select" className="px-3 py-2"><input type="checkbox" aria-label={`Select ${student.name}`} checked={selectedStudentRollNos.includes(student.rollNo)} onChange={(event) => setSelectedStudentRollNos((current) => event.target.checked ? [...current, student.rollNo] : current.filter((rollNo) => rollNo !== student.rollNo))} /></td><td data-label="Student" className="px-3 py-2"><button type="button" onClick={() => openStudentPage(student.rollNo)} className="text-left font-medium text-indigo-700 hover:underline">{student.name}</button></td><td data-label="Roll number" className="px-3 py-2">{student.rollNo}</td><td data-label="Batch" className="px-3 py-2">{student.batch ? `${student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</td></tr>)}
             {!filteredStudents.length && <tr><td colSpan={4} className="px-3 py-5 text-center text-slate-500">No students match this filter.</td></tr>}
           </tbody></table></div>
+        </section>
+        {batchConfirmation && <div role="alertdialog" aria-modal="true" aria-labelledby="batch-confirmation-title" className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+            <h2 id="batch-confirmation-title" className="text-xl font-semibold">{batchConfirmation.promote
+              ? `Promote all ${batchConfirmation.rollNos.length} Junior batch ${batchConfirmation.rollNos.length === 1 ? 'student' : 'students'} to Senior batch?`
+              : `Set ${batchConfirmation.rollNos.length} ${batchConfirmation.rollNos.length === 1 ? 'student' : 'students'} to ${batchConfirmation.batch === 'junior' ? 'Junior batch' : batchConfirmation.batch === 'senior' ? 'Senior batch' : 'Not set'}?`}</h2>
+            <p className="mt-2 text-sm text-slate-600">This change will be recorded in the audit log.</p>
+            <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setBatchConfirmation(null)} className="min-h-11 rounded-lg border px-4 py-2">Cancel</button><button type="button" onClick={() => void confirmBatchUpdate()} className="min-h-11 rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white">Confirm</button></div>
+          </div>
+        </div>}
+      </section>}
+
+      {view === 'student-import' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-xl font-semibold">Import students</h2>
+        <p className="mt-1 text-sm text-slate-600">Upload a roster in Excel or CSV format. Accepted columns are Roll No, Name, and Batch.</p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button type="button" onClick={downloadStudentTemplate} className="min-h-11 rounded-lg border px-4 py-2 text-sm">Download sample Excel</button>
+          <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white">Upload roster<input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleRosterUpload} /></label>
         </div>
+        <p className="mt-3 text-sm text-slate-500">A blank Batch value leaves an existing student’s batch unchanged. Existing students with matching roll numbers are updated.</p>
+      </section>}
+
+      {view === 'students' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-xl font-semibold">Student history</h2>
+        <div className="mt-4 flex items-end gap-2"><label className="w-full max-w-sm text-sm font-medium">Student roll number<input value={studentSearch} onChange={(event) => { setStudentSearch(event.target.value); setStudentDetailError(''); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); loadStudentDetail(); } }} placeholder="Search by roll number" className="mt-1 w-full rounded-lg border px-3 py-2" /></label><button onClick={loadStudentDetail} className="rounded-lg bg-indigo-600 px-4 py-2 text-white">Search</button></div>
+        {studentDetailLoading && <p role="status" className="mt-5 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Loading student details…</p>}
+        {studentDetailError && <p role="alert" className="mt-5 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{studentDetailError}</p>}
+        {!studentDetailLoading && !studentDetailError && !studentDetail && studentRouteRollNo && <p role="status" className="mt-5 text-sm text-slate-500">Enter a roll number above and select Search.</p>}
         {studentDetail && <div className="mt-6">
           <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="text-2xl font-semibold">{studentDetail.student.name}</h3><p className="text-slate-500">{studentDetail.student.rollNo}</p><p className="mt-2 text-sm">Defaults: {studentDetail.student.numberOfDefaults} · Removed: {studentDetail.student.numberOfRemovedDefaults ?? 0}</p><p className="mt-1 text-sm">Batch: {studentDetail.student.batch ? `${studentDetail.student.batch === 'junior' ? 'Junior' : 'Senior'} batch` : <span className="font-medium text-amber-700">Not set</span>}</p>          <label className="mt-2 block text-sm">Change batch<select aria-label="Change student batch" value={studentDetail.student.batch ?? ''} onChange={(event) => { if (['', 'junior', 'senior'].includes(event.target.value)) void changeStudentBatch(studentDetail.student.rollNo, event.target.value as 'junior' | 'senior' | ''); }} className="mt-1 rounded-lg border px-3 py-2"><option value="">Not set</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option></select></label></div><button onClick={() => void toggleStudentLock()} className="rounded-lg border px-3 py-2">{studentDetail.student.studentLocked ? 'Unlock student' : 'Lock student'}</button></div>
           <h4 className="mt-6 font-semibold">Active defaults ({studentDetail.defaults.filter((record) => record.status !== 'removed').length})</h4>
@@ -1338,52 +1375,19 @@ export default function HomePage() {
           <label className="text-sm">Roll number<input placeholder="Any roll number" value={activityFilters.rollNo} onChange={(event) => setActivityFilters({ ...activityFilters, rollNo: event.target.value, skip: 0 })} className="mt-1 w-full rounded border px-2 py-2" /></label>
           <label className="text-sm">Batch<select value={activityFilters.batch} onChange={(event) => setActivityFilters({ ...activityFilters, batch: event.target.value, skip: 0 })} className="mt-1 w-full rounded border px-2 py-2"><option value="">All batches</option><option value="junior">Junior batch</option><option value="senior">Senior batch</option><option value="not_set">Not set</option></select></label>
         </div>
-        <Timeline events={activity} />
+        <Timeline events={activity} onOpenStudent={openStudentPage} />
         {activityHasMore && <button type="button" onClick={() => setActivityFilters({ ...activityFilters, skip: activity.length })} className="mt-4 rounded-lg border px-4 py-2 text-sm font-medium">Load more</button>}
       </section>}
 
       {view === 'settings' && <section className="space-y-6">
         <div className="flex gap-2 border-b border-slate-200">
-          <button type="button" onClick={() => setSettingsSubView('data')} className={`border-b-2 px-3 py-2 text-sm font-medium ${settingsSubView === 'data' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}>Data management</button>
+          <button type="button" onClick={() => setSettingsSubView('backup')} className={`border-b-2 px-3 py-2 text-sm font-medium ${settingsSubView === 'backup' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}>Data backup</button>
           <button type="button" onClick={() => setSettingsSubView('types')} className={`border-b-2 px-3 py-2 text-sm font-medium ${settingsSubView === 'types' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}>Default types</button>
         </div>
-        {settingsSubView === 'data' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div><h2 className="text-xl font-semibold">Data management</h2><p className="mt-1 text-sm text-slate-600">Review record counts and export a complete workbook backup before clearing test data.</p></div>
-            <button type="button" onClick={() => void loadResetCounts()} className="rounded-lg border px-3 py-2 text-sm">Refresh counts</button>
-          </div>
-          {!resetEnabled
-            ? <p role="status" className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 font-medium text-amber-900">Data reset is disabled. Set ALLOW_DATA_RESET=true on the server only while testing, then redeploy.</p>
-            : <>
-              <div className="mt-5 flex flex-wrap gap-2">
-                <button type="button" onClick={() => chooseResetPreset('test')} className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700">Clear test data</button>
-                <button type="button" onClick={() => chooseResetPreset('full')} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">Full reset</button>
-              </div>
-              <div className="mt-5 space-y-2">
-                {resetCategoryLabels.map(({ key, label }) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-3">
-                  <span className="flex items-center gap-3"><input type="checkbox" checked={resetSelected.includes(key)} onChange={(event) => {
-                    setResetSelected((current) => event.target.checked ? [...current, key] : current.filter((value) => value !== key));
-                    setResetResult(null);
-                  }} /><span>{label}</span></span>
-                  <strong className="tabular-nums">{resetCounts?.[key] ?? 0}</strong>
-                </label>)}
-              </div>
-              <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-                <p className="font-semibold">This cannot be undone. Export everything to Excel before deleting data.</p>
-                <button type="button" onClick={() => void exportEverything()} className="mt-3 rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white">Export everything to Excel</button>
-                {backupToken && <p role="status" className="mt-2 text-emerald-800">Backup export confirmed. Reset is unlocked for 30 minutes.</p>}
-              </div>
-              <label className="mt-5 block text-sm font-medium text-slate-700">Type RESET to confirm
-                <input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} autoComplete="off" className="mt-2 block w-full max-w-sm rounded-lg border border-slate-300 px-3 py-2.5" />
-              </label>
-              <button type="button" onClick={() => void performDataReset()} disabled={resetBusy || !backupToken || resetConfirmation !== 'RESET' || !resetSelected.length} className="mt-4 rounded-lg bg-rose-700 px-4 py-2.5 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{resetBusy ? 'Clearing selected data…' : 'Delete selected data'}</button>
-              {resetResult && <div role="status" className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <h3 className="font-semibold">Records deleted by collection</h3>
-                <ul className="mt-2 grid gap-1 text-sm sm:grid-cols-2">{Object.entries(resetResult.removed ?? {}).map(([collection, count]) => <li key={collection}>{collection}: <strong>{count}</strong></li>)}</ul>
-                {!!resetResult.errors?.length && <div className="mt-3 text-sm text-rose-700"><p className="font-semibold">Some deletions failed:</p><ul className="list-disc pl-5">{resetResult.errors.map((error, index) => <li key={index}>{error}</li>)}</ul></div>}
-                <p className="mt-3 text-sm text-slate-600">A data reset audit entry was recorded. Your signed-in member record was preserved.</p>
-              </div>}
-            </>}
+        {settingsSubView === 'backup' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Full data backup</h2>
+          <p className="mt-1 text-sm text-slate-600">Download a workbook containing the current student, member, defaults, DC, import, and audit data. Store the file securely.</p>
+          <button type="button" onClick={() => void exportEverything()} className="mt-5 min-h-11 rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white">Download full backup (Excel)</button>
         </section>}
         {settingsSubView === 'types' && <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1551,7 +1555,7 @@ export default function HomePage() {
             {detail.record.status === 'logged' && <button onClick={() => void removeDefault(detail.record)} className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">Remove</button>}
             {detail.record.status === 'removed' && <><input placeholder="Reason to restore" value={editReason} onChange={(event) => setEditReason(event.target.value)} className="rounded border px-3 py-2" /><button onClick={() => void updateDefault('restore')} className="rounded border px-3 py-2">Restore</button></>}
           </div>
-          <h3 className="mt-7 font-semibold">History</h3><Timeline events={detail.events} />
+          <h3 className="mt-7 font-semibold">History</h3><Timeline events={detail.events} onOpenStudent={openStudentPage} />
           <div className="mt-5 border-t pt-4"><label className="block text-sm font-semibold">Add DC note<textarea rows={2} value={dcNote} onChange={(event) => setDcNote(event.target.value)} className="mt-2 w-full rounded border px-3 py-2" /></label><button onClick={() => void saveDcNote()} disabled={!dcNote.trim()} className="mt-2 rounded bg-indigo-600 px-3 py-2 text-white disabled:bg-slate-300">Add note</button><p className="mt-1 text-xs text-slate-500">Only active placement/summer internship members can add notes.</p></div>
         </div>
       </div>}
@@ -1562,7 +1566,7 @@ export default function HomePage() {
   );
 }
 
-function Timeline({ events }: { events: EventRecord[] }) {
+function Timeline({ events, onOpenStudent }: { events: EventRecord[]; onOpenStudent: (rollNo: string) => void }) {
   if (!events.length) return <p className="mt-3 text-sm text-slate-500">No history events.</p>;
   const labels: Record<string, string> = {
     logged: 'Default logged', edited: 'Default updated', locked: 'Default locked', unlocked: 'Default unlocked',
@@ -1595,7 +1599,7 @@ function Timeline({ events }: { events: EventRecord[] }) {
           {expandable ? <details><summary className="cursor-pointer font-medium">{title}{group.length > 1 ? ` · ${group.length} defaults` : ''}</summary>
             <div className="mt-2 space-y-2 text-sm">
               {group.map((item) => <div key={item.eventId} className="border-t pt-2">
-                <p>{item.studentName ?? item.rollNo} ({item.rollNo}){item.studentBatch ? ` · ${item.studentBatch === 'junior' ? 'Junior' : 'Senior'} batch` : ' · Batch not set'}</p>
+                <p><button type="button" onClick={() => onOpenStudent(item.rollNo)} className="text-left text-indigo-700 hover:underline">{item.studentName ?? item.rollNo} ({item.rollNo})</button>{item.studentBatch ? ` · ${item.studentBatch === 'junior' ? 'Junior' : 'Senior'} batch` : ' · Batch not set'}</p>
                 <p className="text-xs text-slate-500">{item.actor === 'system' ? 'System' : `${item.memberName} · ${teamLabel(item.team)}`}</p>
                 {item.reason && <p><strong>Reason:</strong> {item.reason}</p>}
                 {item.note && <p><strong>Note:</strong> {item.note}</p>}
@@ -1607,7 +1611,7 @@ function Timeline({ events }: { events: EventRecord[] }) {
           </details> : <strong className="font-medium">{title}</strong>}
           <time className="text-xs text-slate-500">{new Date(event.at).toLocaleTimeString()}</time>
         </div>
-        {group.length === 1 && <p className="mt-1 text-sm text-slate-600">{event.studentName ?? event.rollNo} ({event.rollNo}) · {event.studentBatch ? `${event.studentBatch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</p>}
+        {group.length === 1 && <p className="mt-1 text-sm text-slate-600"><button type="button" onClick={() => onOpenStudent(event.rollNo)} className="text-indigo-700 hover:underline">{event.studentName ?? event.rollNo} ({event.rollNo})</button> · {event.studentBatch ? `${event.studentBatch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Batch not set'}</p>}
         <p className="mt-1 text-xs text-slate-500">{event.actor === 'system' ? 'System' : event.memberName}</p>
       </li>;
     })}</ol>

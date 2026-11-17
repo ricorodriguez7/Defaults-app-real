@@ -61,7 +61,7 @@ function displayStatus(dc: DashboardDc) {
   return dc.status;
 }
 
-export default function DashboardDCTab() {
+export default function DashboardDCTab({ onOpenStudent }: { onOpenStudent: (rollNo: string) => void }) {
   const [dcs, setDcs] = useState<DashboardDc[]>([]);
   const [range, setRange] = useState({ from: '', to: '' });
   const [batch, setBatch] = useState<BatchFilter>('both');
@@ -224,7 +224,7 @@ export default function DashboardDCTab() {
       <div className="responsive-table mt-4">
         <table className="min-w-full table-fixed text-left text-sm">
           <thead className="bg-slate-50 text-slate-600"><tr>{['Student', 'Roll number', 'Batch', 'Company', 'Default type', 'Date logged', 'Removal reason / remarks'].map((title) => <th key={title} className="px-3 py-2">{title}</th>)}</tr></thead>
-          <tbody>{detailRecords.map((record) => <tr key={record.id} className="border-t text-slate-600"><td className="px-3 py-2">{record.studentName}</td><td className="px-3 py-2">{record.rollNo}</td><td className="px-3 py-2">{batchLabel(record.batch)}</td><td className="px-3 py-2">{record.company}</td><td className="px-3 py-2">{record.typeName}</td><td className="px-3 py-2">{record.date}</td><td className="px-3 py-2">{record.removeReason || '—'}</td></tr>)}
+          <tbody>{detailRecords.map((record) => <tr key={record.id} className="border-t text-slate-600"><td className="px-3 py-2"><button type="button" onClick={() => onOpenStudent(record.rollNo)} className="text-left text-indigo-700 hover:underline">{record.studentName}</button></td><td className="px-3 py-2"><button type="button" onClick={() => onOpenStudent(record.rollNo)} className="text-indigo-700 hover:underline">{record.rollNo}</button></td><td className="px-3 py-2">{batchLabel(record.batch)}</td><td className="px-3 py-2">{record.company}</td><td className="px-3 py-2">{record.typeName}</td><td className="px-3 py-2">{record.date}</td><td className="px-3 py-2">{record.removeReason || '—'}</td></tr>)}
             {!detailRecords.length && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-500">No removed defaults are recorded for this DC and batch.</td></tr>}
           </tbody>
         </table>

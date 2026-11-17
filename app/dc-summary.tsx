@@ -38,7 +38,7 @@ function sumCounts(items: Array<{ [key: string]: number | string | undefined } |
   return items.reduce((total, item) => total + Number(item?.[key] ?? 0), 0);
 }
 
-export default function DCSummaryTab() {
+export default function DCSummaryTab({ onOpenStudent }: { onOpenStudent: (rollNo: string) => void }) {
   const [dcs, setDcs] = useState<DcOverview[]>([]);
   const [selectedDcId, setSelectedDcId] = useState('');
   const [detail, setDetail] = useState<DcDetail | null>(null);
@@ -157,13 +157,13 @@ export default function DCSummaryTab() {
 
   const absentees = detail?.entries.filter((entry) => entry.attendance === 'Absent') ?? [];
   const decisionRows = useMemo(() => {
-    if (!detail) return [] as Array<{ label: string; students: string[]; count: number }>;
-    const groups = new Map<string, { label: string; students: string[] }>();
+    if (!detail) return [] as Array<{ label: string; students: Array<{ rollNo: string; name: string }>; count: number }>;
+    const groups = new Map<string, { label: string; students: Array<{ rollNo: string; name: string }> }>();
     for (const entry of detail.entries) {
       for (const defaultItem of entry.defaults ?? []) {
         const label = defaultItem.decision || 'Undecided';
         if (!groups.has(label)) groups.set(label, { label, students: [] });
-        groups.get(label)?.students.push(`${entry.rollNo} — ${entry.studentName}`);
+        groups.get(label)?.students.push({ rollNo: entry.rollNo, name: entry.studentName });
       }
     }
     return Array.from(groups.entries()).map(([label, value]) => ({
@@ -261,7 +261,7 @@ export default function DCSummaryTab() {
               <div className="mt-4 space-y-2">
                 {absentees.length ? absentees.map((entry) => (
                   <div key={entry.rollNo} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-                    <span><strong>{entry.rollNo}</strong> · {entry.studentName} · {entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</span>
+                    <span><button type="button" onClick={() => onOpenStudent(entry.rollNo)} className="font-semibold text-indigo-700 hover:underline">{entry.rollNo} · {entry.studentName}</button> · {entry.batch ? `${entry.batch === 'junior' ? 'Junior' : 'Senior'} batch` : 'Not set'}</span>
                     <span className="text-slate-600">{entry.absentReason || 'No reason'}</span>
                   </div>
                 )) : <p className="text-sm text-slate-500">No absentees recorded for this DC.</p>}
@@ -285,7 +285,7 @@ export default function DCSummaryTab() {
                       <span className="text-xs text-slate-500">{row.count}</span>
                     </div>
                     <ul className="mt-2 space-y-1 text-sm text-slate-600">
-                      {row.students.slice(0, 6).map((student) => <li key={student}>{student}</li>)}
+                      {row.students.slice(0, 6).map((student, index) => <li key={`${student.rollNo}-${index}`}><button type="button" onClick={() => onOpenStudent(student.rollNo)} className="text-left text-indigo-700 hover:underline">{student.rollNo} — {student.name}</button></li>)}
                     </ul>
                   </div>
                 )) : <p className="text-sm text-slate-500">No decisions match the selected filter.</p>}
@@ -299,7 +299,7 @@ export default function DCSummaryTab() {
               <div className="mt-4 space-y-2">
                 {carriedForward.length ? carriedForward.map((entry) => (
                   <div key={entry.rollNo} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="font-medium text-slate-800">{entry.rollNo} · {entry.studentName}</div>
+                    <button type="button" onClick={() => onOpenStudent(entry.rollNo)} className="font-medium text-indigo-700 hover:underline">{entry.rollNo} · {entry.studentName}</button>
                     <ul className="mt-1 list-disc pl-4 text-slate-600">
                       {(entry.defaults ?? []).filter((item) => ['Undecided', 'Discuss with team', 'Defer'].includes(item.decision)).map((item) => (
                         <li key={item.id}>{item.typeName} — {item.decision}</li>

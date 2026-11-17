@@ -2,7 +2,6 @@ import * as XLSX from 'xlsx';
 import { NextResponse } from 'next/server';
 import { getAuthorizedEmail } from '@/lib/authorization';
 import { getApiErrorMessage } from '@/lib/database-errors';
-import { createDataBackupToken } from '@/lib/data-backup-token';
 import { getDb } from '@/lib/mongodb';
 
 export const runtime = 'nodejs';
@@ -47,13 +46,11 @@ export async function GET() {
     const bytes = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }) as Buffer;
     const body = new Uint8Array(bytes.byteLength);
     body.set(bytes);
-    const token = createDataBackupToken(email, Date.now());
     return new NextResponse(body, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Disposition': 'attachment; filename="default-tracker-backup.xlsx"',
         'Cache-Control': 'private, no-store',
-        'X-Data-Backup-Token': token,
       },
     });
   } catch (error) {

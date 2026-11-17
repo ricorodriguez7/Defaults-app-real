@@ -36,13 +36,20 @@ export async function POST(request: Request) {
         { session, projection: { _id: 1, rollNo: 1, batch: 1 } },
       ).toArray();
       const now = new Date();
-      await db.collection('students').bulkWrite(students.map((student) => ({
-        updateOne: {
-          filter: { _id: student._id },
-          update: { $set: { batch, batchUpdatedAt: now, batchUpdatedByMemberId: actor.memberId } },
-        },
-      })), { session });
       const changedStudents = students.filter((student) => (student.batch ?? '') !== batch);
+      const oldBatchCounts = {
+        junior: changedStudents.filter((student) => student.batch === 'junior').length,
+        senior: changedStudents.filter((student) => student.batch === 'senior').length,
+        notSet: changedStudents.filter((student) => !student.batch).length,
+      };
+      if (students.length) {
+        await db.collection('students').bulkWrite(students.map((student) => ({
+          updateOne: {
+            filter: { _id: student._id },
+            update: { $set: { batch, batchUpdatedAt: now, batchUpdatedByMemberId: actor.memberId } },
+          },
+        })), { session });
+      }
       if (changedStudents.length) {
         await db.collection('default_events').insertMany(changedStudents.map((student) => ({
           eventId: randomUUID(),
@@ -61,9 +68,10 @@ export async function POST(request: Request) {
       await db.collection('audit_log').insertOne({
         action: 'Student batches updated', collection: 'students', by: email, at: now,
         category: 'members', actor: actor.memberId,
-        after: { requested: rollNos.length, updated: students.length, batch: batch || 'Not set' },
+        before: { students: changedStudents.length, batches: oldBatchCounts },
+        after: { requested: rollNos.length, updated: changedStudents.length, batch: batch || 'Not set' },
       }, { session });
-      return { updated: students.length, notFound: rollNos.length - students.length };
+      return { updated: changedStudents.length, notFound: rollNos.length - students.length };
     });
     return NextResponse.json({ ...updated, batch });
   } catch (error) {
